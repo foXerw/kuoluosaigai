@@ -1,25 +1,9 @@
 <template>
-  <HelloWorld msg="阔落塞该"/>
+  <div style="color:#39ff14;background:#0a0e0a;min-height:100vh;font-family:monospace">
+    kuoluosaigai — bootstrapping…
+  </div>
 </template>
 
 <script>
-import HelloWorld from './components/kuoluosaigai.vue'
-
-export default {
-  name: 'App',
-  components: {
-    HelloWorld
-  }
-}
+export default { name: 'App' }
 </script>
-
-<style>
-#app {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-align: center;
-  color: #2c3e50;
-  margin-top: 60px;
-}
-</style>
