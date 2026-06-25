@@ -53,7 +53,7 @@ App.vue
 | 1882 | AMBER | 琥珀 `#ffb000` | 琥珀 |
 
 - 抽签在 `App.vue` 挂载时发生，写入 `sessionStorage`（同一会话刷新不跳变，关标签再开换新频）
-- 代号 = 前缀 + 4 位随机数（如 `SETSUBUN-7741`），显示在顶栏
+- 代号 = 前缀 + 该频道频率（如 `SETSUBUN-7741`），频率与频道固定对应，显示在顶栏
 - 状态栏放 🔄 RESHUFFLE 按钮：手动换频（即"随机修改主题"交互）
 - Ant Design 部分通过 `ConfigProvider :theme="{ token: { colorPrimary } }"` 跟随当前频道主色统一魔改
 
