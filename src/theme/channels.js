@@ -12,18 +12,35 @@ export function codename(channel) {
 }
 
 export function pickChannel(rng = Math.random) {
-  const stored = sessionStorage.getItem(STORAGE_KEY)
+  let stored = null
+  try {
+    stored = sessionStorage.getItem(STORAGE_KEY)
+  } catch (e) {
+    // sessionStorage unavailable (e.g. privacy mode) — fall through to fresh pick
+  }
   if (stored) {
     const found = CHANNELS.find((c) => c.freq === stored)
     if (found) return found
   }
-  const channel = CHANNELS[Math.floor(rng() * CHANNELS.length)]
-  sessionStorage.setItem(STORAGE_KEY, channel.freq)
+  const channel = pickByRng(rng)
+  try {
+    sessionStorage.setItem(STORAGE_KEY, channel.freq)
+  } catch (e) {
+    // sessionStorage unavailable — return channel without persisting
+  }
   return channel
 }
 
 export function reshuffleChannel(rng = Math.random) {
-  const channel = CHANNELS[Math.floor(rng() * CHANNELS.length)]
-  sessionStorage.setItem(STORAGE_KEY, channel.freq)
+  const channel = pickByRng(rng)
+  try {
+    sessionStorage.setItem(STORAGE_KEY, channel.freq)
+  } catch (e) {
+    // sessionStorage unavailable — return channel without persisting
+  }
   return channel
+}
+
+function pickByRng(rng) {
+  return CHANNELS[Math.min(Math.floor(rng() * CHANNELS.length), CHANNELS.length - 1)]
 }

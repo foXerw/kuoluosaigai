@@ -18,6 +18,7 @@
 
 <script>
 import CenterGate from './CenterGate.vue'
+import { codename } from '../theme/channels'
 
 export default {
   name: 'ChannelShell',
@@ -35,7 +36,7 @@ export default {
   },
   computed: {
     codename() {
-      return `${this.channel.prefix}-${this.channel.freq}`
+      return codename(this.channel)
     },
   },
   mounted() {

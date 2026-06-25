@@ -1,6 +1,6 @@
 <template>
   <a-config-provider :theme="themeConfig">
-    <div class="app" :style="{ '--app-color': currentColor, '--app-glow': currentGlow }">
+    <div class="app">
       <BootSequence v-if="phase === 'boot'" :reduced-motion="reducedMotion" @ready="enter" />
       <ChannelShell v-else :channel="channel" @enter="openPlaceholder" @reshuffle="reshuffle" />
       <ChatPlaceholder :open="placeholderOpen" @close="placeholderOpen = false" />
@@ -40,6 +40,24 @@ export default {
     },
     themeConfig() {
       return { token: { colorPrimary: this.currentColor } }
+    },
+  },
+  watch: {
+    currentColor: {
+      immediate: true,
+      handler(value) {
+        if (typeof document !== 'undefined') {
+          document.documentElement.style.setProperty('--app-color', value)
+        }
+      },
+    },
+    currentGlow: {
+      immediate: true,
+      handler(value) {
+        if (typeof document !== 'undefined') {
+          document.documentElement.style.setProperty('--app-glow', value)
+        }
+      },
     },
   },
   created() {
