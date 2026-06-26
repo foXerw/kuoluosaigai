@@ -11,11 +11,11 @@
         v-if="phase === 'wiping' || phase === 'shell'"
         class="app__shell"
         :channel="channel"
-        @enter="openPlaceholder"
+        @enter="openChat"
         @reshuffle="reshuffle"
       />
       <ScanlineWipe v-if="phase === 'wiping'" @done="onWipeDone" />
-      <ChatPlaceholder :open="placeholderOpen" @close="placeholderOpen = false" />
+      <ChatRoom v-if="chatOpen" :url="wsUrl" :channel="channel" @close="closeChat" />
     </div>
   </a-config-provider>
 </template>
@@ -24,7 +24,7 @@
 import { ConfigProvider } from 'ant-design-vue'
 import BootSequence from './components/BootSequence.vue'
 import ChannelShell from './components/ChannelShell.vue'
-import ChatPlaceholder from './components/ChatPlaceholder.vue'
+import ChatRoom from './components/ChatRoom.vue'
 import ScanlineWipe from './components/ScanlineWipe.vue'
 import { pickChannel, reshuffleChannel } from './theme/channels'
 
@@ -40,14 +40,15 @@ export default {
     'a-config-provider': ConfigProvider,
     BootSequence,
     ChannelShell,
-    ChatPlaceholder,
+    ChatRoom,
     ScanlineWipe,
   },
   data() {
     return {
       phase: 'boot',
       channel: null,
-      placeholderOpen: false,
+      chatOpen: false,
+      wsUrl: process.env.VUE_APP_WS_URL || '',
       reducedMotion: false,
       wipeTimer: null,
     }
@@ -112,8 +113,11 @@ export default {
       }
       this.phase = 'shell'
     },
-    openPlaceholder() {
-      this.placeholderOpen = true
+    openChat() {
+      this.chatOpen = true
+    },
+    closeChat() {
+      this.chatOpen = false
     },
     reshuffle() {
       this.channel = reshuffleChannel()
