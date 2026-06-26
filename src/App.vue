@@ -1,8 +1,20 @@
 <template>
   <a-config-provider :theme="themeConfig">
-    <div class="app">
-      <BootSequence v-if="phase === 'boot'" :reduced-motion="reducedMotion" @ready="enter" />
-      <ChannelShell v-else :channel="channel" @enter="openPlaceholder" @reshuffle="reshuffle" />
+    <div class="app" :class="phaseClass">
+      <BootSequence
+        v-if="phase === 'boot' || phase === 'wiping'"
+        class="app__boot"
+        :reduced-motion="reducedMotion"
+        @ready="onReady"
+      />
+      <ChannelShell
+        v-if="phase === 'wiping' || phase === 'shell'"
+        class="app__shell"
+        :channel="channel"
+        @enter="openPlaceholder"
+        @reshuffle="reshuffle"
+      />
+      <ScanlineWipe v-if="phase === 'wiping'" @done="onWipeDone" />
       <ChatPlaceholder :open="placeholderOpen" @close="placeholderOpen = false" />
     </div>
   </a-config-provider>
@@ -13,6 +25,7 @@ import { ConfigProvider } from 'ant-design-vue'
 import BootSequence from './components/BootSequence.vue'
 import ChannelShell from './components/ChannelShell.vue'
 import ChatPlaceholder from './components/ChatPlaceholder.vue'
+import ScanlineWipe from './components/ScanlineWipe.vue'
 import { pickChannel, reshuffleChannel } from './theme/channels'
 
 export default {
@@ -22,6 +35,7 @@ export default {
     BootSequence,
     ChannelShell,
     ChatPlaceholder,
+    ScanlineWipe,
   },
   data() {
     return {
@@ -32,6 +46,9 @@ export default {
     }
   },
   computed: {
+    phaseClass() {
+      return 'app--' + this.phase
+    },
     currentColor() {
       return this.channel?.color || '#39ff14'
     },
@@ -67,7 +84,10 @@ export default {
     this.channel = pickChannel()
   },
   methods: {
-    enter() {
+    onReady() {
+      this.phase = this.reducedMotion ? 'shell' : 'wiping'
+    },
+    onWipeDone() {
       this.phase = 'shell'
     },
     openPlaceholder() {
@@ -81,5 +101,26 @@ export default {
 </script>
 
 <style scoped>
-.app { min-height: 100vh; }
+.app {
+  position: relative;
+  min-height: 100vh;
+}
+.app__boot { opacity: 1; }
+.app__shell { opacity: 1; }
+.app--wiping .app__boot {
+  position: absolute;
+  inset: 0;
+  animation: bootOut var(--wipe-ms) ease-in forwards;
+}
+.app--wiping .app__shell {
+  animation: shellIn var(--wipe-ms) ease-in;
+}
+@keyframes bootOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes shellIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 </style>
