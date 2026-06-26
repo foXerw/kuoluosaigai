@@ -11,7 +11,7 @@ describe('App', () => {
     BootSequence: { template: '<div class="boot-stub" @click="$emit(\'ready\')" />', emits: ['ready'] },
     ScanlineWipe: { template: '<div class="wipe-stub" @click="$emit(\'done\')" />', emits: ['done'] },
     ChannelShell: true,
-    ChatPlaceholder: true,
+    ChatRoom: true,
   }
 
   it('starts in boot phase with only BootSequence mounted', () => {
@@ -62,7 +62,6 @@ describe('App', () => {
       const wrapper = mount(App, { global: { stubs } })
       await wrapper.find('.boot-stub').trigger('click')
       expect(wrapper.find('.wipe-stub').exists()).toBe(true)
-      // do NOT click .wipe-stub; let the fallback fire
       vi.advanceTimersByTime(800)
       await wrapper.vm.$nextTick()
       expect(wrapper.find('.wipe-stub').exists()).toBe(false)
@@ -78,6 +77,28 @@ describe('App', () => {
     expect(wrapper.vm.channel).toBeTruthy()
     expect(wrapper.vm.channel.freq).toMatch(/^\d{4}$/)
   })
+
+  it('opens ChatRoom on ChannelShell enter and closes on chat close', async () => {
+    const enterStubs = {
+      'a-config-provider': { template: '<div><slot /></div>' },
+      BootSequence: true,
+      ScanlineWipe: true,
+      ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'enter\')" />', emits: ['enter', 'reshuffle'] },
+      ChatRoom: { name: 'ChatRoom', template: '<div class="chat-stub" @click="$emit(\'close\')" />', emits: ['close'] },
+    }
+    const wrapper = mount(App, { global: { stubs: enterStubs } })
+    wrapper.vm.onReady()
+    wrapper.vm.onWipeDone()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.shell-stub').exists()).toBe(true)
+    expect(wrapper.find('.chat-stub').exists()).toBe(false)
+    await wrapper.find('.shell-stub').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.chat-stub').exists()).toBe(true)
+    await wrapper.find('.chat-stub').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.chat-stub').exists()).toBe(false)
+  })
 })
 
 describe('App channel theming', () => {
@@ -92,7 +113,7 @@ describe('App channel theming', () => {
           'a-config-provider': { template: '<div><slot /></div>' },
           BootSequence: true,
           ChannelShell: true,
-          ChatPlaceholder: true,
+          ChatRoom: true,
         },
       },
     })
