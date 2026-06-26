@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import App from '../src/App.vue'
 import { CHANNELS } from '../src/theme/channels'
@@ -9,15 +9,68 @@ describe('App', () => {
   const stubs = {
     'a-config-provider': { template: '<div><slot /></div>' },
     BootSequence: { template: '<div class="boot-stub" @click="$emit(\'ready\')" />', emits: ['ready'] },
+    ScanlineWipe: { template: '<div class="wipe-stub" @click="$emit(\'done\')" />', emits: ['done'] },
     ChannelShell: true,
     ChatPlaceholder: true,
   }
 
-  it('starts in boot phase then enters shell on ready', async () => {
+  it('starts in boot phase with only BootSequence mounted', () => {
     const wrapper = mount(App, { global: { stubs } })
     expect(wrapper.find('.boot-stub').exists()).toBe(true)
+    expect(wrapper.find('.wipe-stub').exists()).toBe(false)
+  })
+
+  it('enters wiping on ready: mounts ScanlineWipe, keeps boot, mounts shell', async () => {
+    const wrapper = mount(App, { global: { stubs } })
     await wrapper.find('.boot-stub').trigger('click')
+    expect(wrapper.find('.boot-stub').exists()).toBe(true)
+    expect(wrapper.find('.wipe-stub').exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'ChannelShell' }).exists()).toBe(true)
+  })
+
+  it('enters shell on wipe done: unmounts boot and wipe, keeps shell', async () => {
+    const wrapper = mount(App, { global: { stubs } })
+    await wrapper.find('.boot-stub').trigger('click')
+    await wrapper.find('.wipe-stub').trigger('click')
+    expect(wrapper.find('.boot-stub').exists()).toBe(false)
+    expect(wrapper.find('.wipe-stub').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'ChannelShell' }).exists()).toBe(true)
+  })
+
+  it('skips wipe under reduced motion: ready goes straight to shell', async () => {
+    const real = window.matchMedia
+    window.matchMedia = () => ({
+      matches: true, media: '', onchange: null,
+      addListener() {}, removeListener() {},
+      addEventListener() {}, removeEventListener() {},
+      dispatchEvent() { return false },
+    })
+    try {
+      const wrapper = mount(App, { global: { stubs } })
+      await wrapper.find('.boot-stub').trigger('click')
+      expect(wrapper.find('.wipe-stub').exists()).toBe(false)
+      expect(wrapper.find('.boot-stub').exists()).toBe(false)
+      expect(wrapper.findComponent({ name: 'ChannelShell' }).exists()).toBe(true)
+    } finally {
+      window.matchMedia = real
+    }
+  })
+
+  it('falls back to shell via safety timeout if wipe animationend never fires', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = mount(App, { global: { stubs } })
+      await wrapper.find('.boot-stub').trigger('click')
+      expect(wrapper.find('.wipe-stub').exists()).toBe(true)
+      // do NOT click .wipe-stub; let the fallback fire
+      vi.advanceTimersByTime(800)
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('.wipe-stub').exists()).toBe(false)
+      expect(wrapper.find('.boot-stub').exists()).toBe(false)
+      expect(wrapper.findComponent({ name: 'ChannelShell' }).exists()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('picks a channel on creation', () => {

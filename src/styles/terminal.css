@@ -3,6 +3,7 @@
   --app-color: #39ff14;
   --app-glow: #39ff14;
   --app-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --wipe-ms: 600ms;
 }
 
 * { box-sizing: border-box; }
