@@ -84,6 +84,14 @@ export function createServer() {
       broadcast({ type: 'leave', nick, ts: now() })
       broadcastPresence()
     })
+
+    ws.on('error', () => {
+      // swallow; the 'close' handler cleans up the clients map and broadcasts leave/presence
+    })
+  })
+
+  wss.on('error', () => {
+    // swallow server-level socket errors
   })
 
   return {
