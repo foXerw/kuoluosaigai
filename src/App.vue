@@ -28,6 +28,12 @@ import ChatPlaceholder from './components/ChatPlaceholder.vue'
 import ScanlineWipe from './components/ScanlineWipe.vue'
 import { pickChannel, reshuffleChannel } from './theme/channels'
 
+// Safety fallback for the wipe phase. --wipe-ms is 600ms in src/styles/terminal.css;
+// this is 600ms wipe + 200ms slack in case the ScanlineWipe animationend never fires
+// (e.g. tab backgrounded, animation cancelled), which would otherwise leave the app
+// stuck in `wiping` and the fading boot layer swallowing pointer events.
+const WIPE_FALLBACK_MS = 800
+
 export default {
   name: 'App',
   components: {
@@ -43,6 +49,7 @@ export default {
       channel: null,
       placeholderOpen: false,
       reducedMotion: false,
+      wipeTimer: null,
     }
   },
   computed: {
@@ -83,11 +90,26 @@ export default {
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
     this.channel = pickChannel()
   },
+  beforeUnmount() {
+    if (this.wipeTimer) {
+      clearTimeout(this.wipeTimer)
+      this.wipeTimer = null
+    }
+  },
   methods: {
     onReady() {
       this.phase = this.reducedMotion ? 'shell' : 'wiping'
+      if (this.phase === 'wiping') {
+        this.wipeTimer = setTimeout(() => {
+          if (this.phase === 'wiping') this.phase = 'shell'
+        }, WIPE_FALLBACK_MS)
+      }
     },
     onWipeDone() {
+      if (this.wipeTimer) {
+        clearTimeout(this.wipeTimer)
+        this.wipeTimer = null
+      }
       this.phase = 'shell'
     },
     openPlaceholder() {
@@ -110,6 +132,7 @@ export default {
 .app--wiping .app__boot {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   animation: bootOut var(--wipe-ms) ease-in forwards;
 }
 .app--wiping .app__shell {

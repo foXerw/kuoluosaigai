@@ -56,6 +56,23 @@ describe('App', () => {
     }
   })
 
+  it('falls back to shell via safety timeout if wipe animationend never fires', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = mount(App, { global: { stubs } })
+      await wrapper.find('.boot-stub').trigger('click')
+      expect(wrapper.find('.wipe-stub').exists()).toBe(true)
+      // do NOT click .wipe-stub; let the fallback fire
+      vi.advanceTimersByTime(800)
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('.wipe-stub').exists()).toBe(false)
+      expect(wrapper.find('.boot-stub').exists()).toBe(false)
+      expect(wrapper.findComponent({ name: 'ChannelShell' }).exists()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('picks a channel on creation', () => {
     const wrapper = mount(App, { global: { stubs } })
     expect(wrapper.vm.channel).toBeTruthy()

@@ -4,7 +4,7 @@
       <p v-for="(l, i) in lines" :key="i" class="boot__line"><span class="boot__prompt">&gt;</span> {{ l }}</p>
       <p v-if="!done" class="boot__current glow">{{ currentText }}<span class="boot__cursor">▋</span></p>
     </div>
-    <p v-if="done" class="boot__hint glow">[ press ENTER to join ]</p>
+    <button v-if="done" type="button" class="boot__hint glow">[ press ENTER to join ]</button>
   </div>
 </template>
 
@@ -71,8 +71,12 @@ export default {
 .boot__cursor { animation: blink 1s steps(1) infinite; margin-left: 2px; }
 .boot__hint {
   margin-top: 24px;
+  background: none;
+  border: 0;
+  cursor: pointer;
   color: var(--app-color);
   font-family: var(--app-mono);
+  padding: 0;
   animation: pulse 1.6s ease-in-out infinite;
 }
 </style>

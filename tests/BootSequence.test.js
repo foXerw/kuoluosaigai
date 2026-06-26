@@ -16,6 +16,7 @@ describe('BootSequence', () => {
   it('renders all lines under reduced motion and emits ready on click', async () => {
     wrapper = mount(BootSequence, { props: { reducedMotion: true } })
     expect(wrapper.findAll('.boot__line')).toHaveLength(4)
+    expect(wrapper.find('button.boot__hint').exists()).toBe(true)
     await wrapper.find('.boot').trigger('click')
     expect(wrapper.emitted('ready')).toBeTruthy()
   })
