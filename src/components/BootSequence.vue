@@ -1,10 +1,10 @@
 <template>
-  <div class="boot">
+  <div class="boot" @click="onClick">
     <div class="boot__log">
       <p v-for="(l, i) in lines" :key="i" class="boot__line"><span class="boot__prompt">&gt;</span> {{ l }}</p>
       <p v-if="!done" class="boot__current glow">{{ currentText }}<span class="boot__cursor">▋</span></p>
     </div>
-    <button v-if="done" class="boot__enter glow" @click="$emit('ready')">[ press ENTER to join ]</button>
+    <p v-if="done" class="boot__hint glow">[ press ENTER to join ]</p>
   </div>
 </template>
 
@@ -33,8 +33,26 @@ export default {
     return { lines, currentText, done, typeSequence, SEQUENCE }
   },
   async mounted() {
+    window.addEventListener('keydown', this.onKey)
     if (this.reducedMotion) return
     await this.typeSequence(SEQUENCE, { charDelay: 24, lineDelay: 220 })
+  },
+  beforeUnmount() {
+    window.removeEventListener('keydown', this.onKey)
+  },
+  methods: {
+    onKey(e) {
+      if (e.key !== 'Enter') return
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+      this.maybeReady()
+    },
+    onClick() {
+      this.maybeReady()
+    },
+    maybeReady() {
+      if (!this.done) return
+      this.$emit('ready')
+    },
   },
 }
 </script>
@@ -51,14 +69,10 @@ export default {
 .boot__log { font-size: 14px; line-height: 1.8; }
 .boot__prompt { margin-right: 8px; opacity: 0.7; }
 .boot__cursor { animation: blink 1s steps(1) infinite; margin-left: 2px; }
-.boot__enter {
+.boot__hint {
   margin-top: 24px;
-  background: none;
-  border: 1px solid var(--app-color);
   color: var(--app-color);
   font-family: var(--app-mono);
-  padding: 10px 18px;
-  cursor: pointer;
   animation: pulse 1.6s ease-in-out infinite;
 }
 </style>
