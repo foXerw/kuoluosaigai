@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256">
+  <!-- 徽章底 -->
+  <rect x="3" y="3" width="58" height="58" rx="11" fill="#0a0e0a" stroke="#39ff14" stroke-opacity="0.22" stroke-width="2"/>
+  <!-- 世界环：顶部留缺口 = 传送门开口 -->
+  <path d="M 25.5 14.1 A 19 19 0 1 1 38.5 14.1" fill="none" stroke="#e8e8e8" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- 绿色珍珠：嵌于顶部缺口，标记"这个世界" -->
+  <circle cx="32" cy="13.5" r="3.5" fill="#39ff14"/>
+</svg>
