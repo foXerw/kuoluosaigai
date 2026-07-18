@@ -29,7 +29,7 @@
 ```bash
 # 前端
 npm install
-npm run serve          # http://localhost:8080（被占用会自增端口）
+npm run dev            # = npm run serve，http://localhost:8080（被占用会自增端口）
 
 # 后端聊天服务（另开终端）
 cd server && npm install && npm start    # 默认 ws://localhost:8080
@@ -45,6 +45,31 @@ npm test               # 前端单测（vitest / jsdom，35 个）
 cd server && npm test  # 后端单测（vitest / node，4 个）
 npm run build          # 生产构建，产物在 dist/
 ```
+
+> 根目录直接 `npm test` 会同时跑前端 + 后端（workspaces）。
+
+## 部署（统一服务）
+
+整站可作为一个 Node Web 服务一键上线——前端静态 + WebSocket 同进程、同端口。适配 Render / Railway / Fly / VPS / Heroku 等能跑 Node 的平台。
+
+| 命令 | 作用 |
+|---|---|
+| `npm install` | 装依赖（workspaces 同时装 `server/` 子包） |
+| `npm run build` | 构建前端，产物在 `dist/` |
+| `npm start` | 启动统一生产服务：托管 `dist/` + WebSocket，同 `PORT` |
+| `npm test` | 跑前端 + 后端全部测试 |
+
+平台流程即标准三步：
+
+```bash
+npm install
+npm run build
+npm start            # 默认 http/ws://localhost:8080，平台用 PORT 环境变量指定端口
+```
+
+前端打开后**无需配置 `.env`**：未注入 `VUE_APP_WS_URL` 时，WS 端点按页面同源推导（`ws(s)://<同 host:port>`），与同进程后端自动连通。若要把前后端拆到不同域名托管，构建时注入 `VUE_APP_WS_URL=wss://你的后端域名` 覆盖同源默认即可。
+
+> 纯静态平台（Netlify / Vercel / Cloudflare Pages）不跑 `npm start`，只用 `npm run build` 的 `dist/`；此时聊天后端需在能跑 Node 的平台单独托管，并用上面的环境变量指过去。
 
 ## 项目结构
 
@@ -76,4 +101,5 @@ public/
 - [x] v1：概念首页 + 聊天室入口（纯静态）
 - [x] v1.1：接入动画补全（Enter 键 + 扫描线 wipe）
 - [x] v2：WebSocket 真匿名聊天室（随机昵称、单全局房间、频道徽章）
-- [ ] 后续：多房间、消息持久化/历史、后端水平扩展（Redis pub/sub）、部署上线
+- [x] 部署：统一服务打包（`npm install && npm run build && npm start`，静态 + ws 同 PORT，同源免配）
+- [ ] 后续：多房间、消息持久化/历史、后端水平扩展（Redis pub/sub）

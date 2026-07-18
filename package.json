@@ -2,11 +2,14 @@
   "name": "kuoluosaigai",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["server"],
   "scripts": {
+    "dev": "vue-cli-service serve",
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
+    "start": "node server/start.js",
     "lint": "vue-cli-service lint",
-    "test": "vitest run",
+    "test": "vitest run && npm run test --workspace kuoluosaigai-server",
     "test:watch": "vitest"
   },
   "dependencies": {

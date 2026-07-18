@@ -1,5 +1,54 @@
 import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// 统一生产服务：同进程托管 dist/ 静态前端；可用 KUO_DIST_DIR 覆盖（测试用）
+const DIST_DIR = process.env.KUO_DIST_DIR
+  ? path.resolve(process.env.KUO_DIST_DIR)
+  : path.resolve(__dirname, '..', 'dist')
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+}
+
+// 极简静态文件服务：根/未知路径回退 index.html（SPA），无新依赖
+function serveStatic(req, res) {
+  if (!fs.existsSync(DIST_DIR)) {
+    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end('Front-end not built. Run `npm run build` first.')
+    return
+  }
+  const reqUrl = new URL(req.url, 'http://localhost')
+  // WHATWG URL 已把 `..`（含 %2e%2e）归一化掉，rel 不会逃出 DIST_DIR
+  const rel = decodeURIComponent(reqUrl.pathname).replace(/^\/+/, '')
+  const filePath = path.resolve(DIST_DIR, rel)
+  // 根路径 / 不存在 / 目录 → SPA 回退 index.html
+  let target = filePath
+  if (!rel || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    target = path.join(DIST_DIR, 'index.html')
+  }
+  if (!fs.existsSync(target)) {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end('not found')
+    return
+  }
+  const ext = path.extname(target).toLowerCase()
+  res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream' })
+  fs.createReadStream(target).pipe(res)
+}
 
 const NICK_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 剔除 O/I/0/1
 const MAX_LEN = 280
@@ -19,7 +68,7 @@ function now() {
 }
 
 export function createServer() {
-  const httpServer = http.createServer()
+  const httpServer = http.createServer(serveStatic)
   const wss = new WebSocketServer({ server: httpServer })
   const clients = new Map() // ws -> { nick, times: [] }
 

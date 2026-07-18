@@ -34,6 +34,16 @@ import { pickChannel, reshuffleChannel } from './theme/channels'
 // stuck in `wiping` and the fading boot layer swallowing pointer events.
 const WIPE_FALLBACK_MS = 800
 
+// WS 端点：优先用构建期注入的 VUE_APP_WS_URL；未配置则按页面同源推导
+// （统一生产服务把 ws 挂在与页面相同的 host:port，无需额外配置）
+function resolveWsUrl() {
+  const env = process.env.VUE_APP_WS_URL
+  if (env) return env
+  if (typeof window === 'undefined') return ''
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}`
+}
+
 export default {
   name: 'App',
   components: {
@@ -48,7 +58,7 @@ export default {
       phase: 'boot',
       channel: null,
       chatOpen: false,
-      wsUrl: process.env.VUE_APP_WS_URL || '',
+      wsUrl: resolveWsUrl(),
       reducedMotion: false,
       wipeTimer: null,
     }
