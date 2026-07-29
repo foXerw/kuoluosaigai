@@ -1,6 +1,25 @@
 import { ref, onBeforeUnmount } from 'vue'
 
 const BACKOFF = [1000, 2000, 5000]
+const NICK_KEY = 'kuoluosaigai:nick'
+const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与服务端 NICK_CHARS 一致（剔除 O/I/0/1）
+
+function readStoredNick() {
+  try {
+    const v = sessionStorage.getItem(NICK_KEY)
+    return NICK_RE.test(v) ? v : null
+  } catch {
+    return null // 隐私模式/无 sessionStorage
+  }
+}
+
+function storeNick(n) {
+  try {
+    sessionStorage.setItem(NICK_KEY, n)
+  } catch {
+    // 隐私模式：忽略
+  }
+}
 
 export function useChat(url, badge = '') {
   const status = ref('closed')
@@ -20,7 +39,9 @@ export function useChat(url, badge = '') {
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return
     closedByUser = false
     status.value = 'connecting'
-    ws = new WebSocket(url)
+    const stored = readStoredNick()
+    const fullUrl = stored ? `${url}${url.includes('?') ? '&' : '?'}nick=${encodeURIComponent(stored)}` : url
+    ws = new WebSocket(fullUrl)
     ws.onopen = () => {
       retries = 0
       status.value = 'open'
@@ -35,6 +56,7 @@ export function useChat(url, badge = '') {
       switch (frame.type) {
         case 'assign':
           nick.value = frame.nick
+          storeNick(frame.nick)
           break
         case 'presence':
           online.value = frame.online

@@ -52,6 +52,7 @@ describe('useChat', () => {
   beforeEach(() => {
     MockSocket.instances = []
     global.WebSocket = MockSocket
+    sessionStorage.clear()
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -117,5 +118,43 @@ describe('useChat', () => {
     const count = MockSocket.instances.length
     await vi.advanceTimersByTimeAsync(10000)
     expect(MockSocket.instances.length).toBe(count)
+  })
+
+  it('persists the assigned nick to sessionStorage', async () => {
+    const w = mountChat()
+    w.vm.c.connect()
+    await flush()
+    MockSocket.instances[0].emit({ type: 'assign', nick: 'ANON-7K2' })
+    expect(w.vm.c.nick.value).toBe('ANON-7K2')
+    expect(sessionStorage.getItem('kuoluosaigai:nick')).toBe('ANON-7K2')
+  })
+
+  it('sends the stored nick as a query param on connect', async () => {
+    sessionStorage.setItem('kuoluosaigai:nick', 'ANON-ABCD')
+    const w = mountChat()
+    w.vm.c.connect()
+    await flush()
+    expect(MockSocket.instances[0].url).toContain('nick=ANON-ABCD')
+  })
+
+  it('keeps the same nick across a reconnect', async () => {
+    vi.useFakeTimers()
+    const w = mountChat()
+    w.vm.c.connect()
+    await vi.advanceTimersByTimeAsync(0) // flush open
+    MockSocket.instances[0].emit({ type: 'assign', nick: 'ANON-KEEP' })
+    MockSocket.instances[0].close() // schedules reconnect(1000ms)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(MockSocket.instances).toHaveLength(2)
+    expect(MockSocket.instances[1].url).toContain('nick=ANON-KEEP')
+    w.unmount()
+  })
+
+  it('ignores a malformed stored nick and connects clean', async () => {
+    sessionStorage.setItem('kuoluosaigai:nick', '<script>')
+    const w = mountChat()
+    w.vm.c.connect()
+    await flush()
+    expect(MockSocket.instances[0].url).not.toContain('nick=')
   })
 })

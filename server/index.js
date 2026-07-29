@@ -54,6 +54,7 @@ const NICK_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 剔除 O/I/0/1
 const MAX_LEN = 280
 const RATE_LIMIT = 10
 const RATE_WINDOW = 60_000
+const HEARTBEAT_MS = 30_000 // 保活 ping 间隔；低于多数 NAT/代理的空闲超时
 
 function genNick() {
   let s = 'ANON-'
@@ -63,8 +64,27 @@ function genNick() {
   return s
 }
 
+const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与 NICK_CHARS 字符集一致（剔除 O/I/0/1）
+function isValidNick(n) {
+  return typeof n === 'string' && NICK_RE.test(n)
+}
+
 function now() {
   return Date.now()
+}
+
+function noop() {}
+
+// 心跳扫描纯函数：isAlive=false 的连接判为死链终止；其余置 false 并 ping（客户端自动回 pong 重置 isAlive）
+export function sweepClients(clients) {
+  for (const ws of clients) {
+    if (ws.isAlive === false) {
+      ws.terminate()
+      continue
+    }
+    ws.isAlive = false
+    ws.ping(noop)
+  }
 }
 
 export function createServer() {
@@ -96,8 +116,13 @@ export function createServer() {
     return false
   }
 
-  wss.on('connection', (ws) => {
-    const nick = genNick()
+  wss.on('connection', (ws, req) => {
+    ws.isAlive = true
+    ws.on('pong', () => {
+      ws.isAlive = true
+    })
+    const requested = new URL(req.url, 'http://localhost').searchParams.get('nick')
+    const nick = isValidNick(requested) ? requested : genNick()
     const info = { nick, times: [] }
     clients.set(ws, info)
 
@@ -143,6 +168,9 @@ export function createServer() {
     // swallow server-level socket errors
   })
 
+  // 保活心跳：每 HEARTBEAT_MS 扫描，无 pong 回应的死链被 terminate（触发 close → 清理 clients/online）
+  const heartbeat = setInterval(() => sweepClients(wss.clients), HEARTBEAT_MS)
+
   return {
     start(port = 0) {
       return new Promise((resolve) => {
@@ -151,6 +179,7 @@ export function createServer() {
     },
     close() {
       return new Promise((resolve) => {
+        clearInterval(heartbeat)
         for (const ws of clients.keys()) ws.close()
         clients.clear()
         wss.close(() => httpServer.close(() => resolve()))

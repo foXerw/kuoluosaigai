@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import WebSocket from 'ws'
-import { createServer } from './index.js'
+import { createServer, sweepClients } from './index.js'
 
 describe('chat server', () => {
   let server, url
@@ -10,9 +10,9 @@ describe('chat server', () => {
     server = null
   })
 
-  function connect() {
+  function connect(path = '') {
     return new Promise((resolve) => {
-      const ws = new WebSocket(url)
+      const ws = new WebSocket(url + path)
       const received = []
       ws.on('message', (raw) => received.push(JSON.parse(raw.toString())))
       ws.on('open', () => resolve({ ws, received }))
@@ -48,6 +48,25 @@ describe('chat server', () => {
     expect(assign.nick).toMatch(/^ANON-[A-Z2-9]{4}$/)
     const presence = await nextFrame(received)
     expect(presence).toEqual({ type: 'presence', online: 1 })
+    ws.close()
+  })
+
+  it('reuses a valid nick passed via query string', async () => {
+    await boot()
+    const { ws, received } = await connect('?nick=ANON-TEST')
+    const assign = await nextFrame(received)
+    expect(assign.type).toBe('assign')
+    expect(assign.nick).toBe('ANON-TEST')
+    ws.close()
+  })
+
+  it('ignores an invalid nick in the query string and assigns a random one', async () => {
+    await boot()
+    const { ws, received } = await connect('?nick=hacker')
+    const assign = await nextFrame(received)
+    expect(assign.type).toBe('assign')
+    expect(assign.nick).toMatch(/^ANON-[A-HJ-NP-Z2-9]{4}$/)
+    expect(assign.nick).not.toBe('hacker')
     ws.close()
   })
 
@@ -101,5 +120,16 @@ describe('chat server', () => {
     const presence1 = await nextFrame(a.received)
     expect(presence1).toEqual({ type: 'presence', online: 1 })
     a.ws.close()
+  })
+
+  it('sweepClients terminates dead sockets and pings live ones', () => {
+    const dead = { isAlive: false, terminate: vi.fn(), ping: vi.fn() }
+    const live = { isAlive: true, terminate: vi.fn(), ping: vi.fn() }
+    sweepClients([dead, live])
+    expect(dead.terminate).toHaveBeenCalledTimes(1)
+    expect(dead.ping).not.toHaveBeenCalled()
+    expect(live.terminate).not.toHaveBeenCalled()
+    expect(live.ping).toHaveBeenCalledTimes(1)
+    expect(live.isAlive).toBe(false)
   })
 })
