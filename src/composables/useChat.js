@@ -26,6 +26,7 @@ export function useChat(url, badge = '') {
   const nick = ref(null)
   const messages = ref([])
   const online = ref(0)
+  const error = ref(null) // 最近一次连接失败的简短原因（如 close 1006），供 UI 与控制台提示
   let ws = null
   let retries = 0
   let retryTimer = null
@@ -39,8 +40,11 @@ export function useChat(url, badge = '') {
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return
     closedByUser = false
     status.value = 'connecting'
+    error.value = null
     const stored = readStoredNick()
     const fullUrl = stored ? `${url}${url.includes('?') ? '&' : '?'}nick=${encodeURIComponent(stored)}` : url
+    // 关键诊断：确认连的是 ws(s)://<真实主机> 还是 ws://localhost（后者说明 .env.local 被误打进生产包）
+    console.info('[ws] connecting', fullUrl)
     ws = new WebSocket(fullUrl)
     ws.onopen = () => {
       retries = 0
@@ -69,15 +73,22 @@ export function useChat(url, badge = '') {
           break
       }
     }
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       status.value = 'closed'
       ws = null
       if (closedByUser) return
+      const code = ev && typeof ev.code === 'number' ? ev.code : null
+      error.value = code ? `close ${code}` : 'close'
+      // 1006=异常断开（代理/防火墙拦截 WebSocket 升级的典型表现）；1005=无状态码
+      console.warn(`[ws] closed (${code ?? 'no code'}) — 目标 ${url}；1006 通常意味着代理/防火墙拦截了升级`)
       const delay = BACKOFF[Math.min(retries, BACKOFF.length - 1)]
       retries += 1
       retryTimer = setTimeout(connect, delay)
     }
-    ws.onerror = () => {}
+    ws.onerror = () => {
+      // WebSocket 的 error 事件不带细节；真实原因在随后 close 事件的 code 里
+      error.value = error.value || 'error'
+    }
   }
 
   function send(text) {
@@ -104,5 +115,5 @@ export function useChat(url, badge = '') {
 
   onBeforeUnmount(disconnect)
 
-  return { status, nick, messages, online, send, connect, disconnect }
+  return { status, error, nick, messages, online, send, connect, disconnect }
 }

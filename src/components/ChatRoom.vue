@@ -20,6 +20,7 @@
           <span v-else class="chat__sys">{{ sysText(m) }}</span>
         </div>
       </div>
+      <p v-if="status !== 'open' && error" class="chat__err">连接失败（{{ error }}）—— 多半是代理/防火墙拦截了 WebSocket</p>
       <form class="chat__input" @submit.prevent="onSubmit">
         <span class="chat__prompt">&gt;</span>
         <input
@@ -105,6 +106,7 @@ export default {
 
     return {
       status: chat.status,
+      error: chat.error,
       nick: chat.nick,
       messages: chat.messages,
       online: chat.online,
@@ -211,5 +213,12 @@ export default {
 }
 .chat__field:disabled {
   opacity: 0.4;
+}
+.chat__err {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #ff6b6b;
+  opacity: 0.85;
 }
 </style>

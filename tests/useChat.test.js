@@ -106,6 +106,16 @@ describe('useChat', () => {
     w.unmount()
   })
 
+  it('surfaces the close code so proxy/firewall failures are diagnosable', async () => {
+    vi.useFakeTimers()
+    const w = mountChat()
+    w.vm.c.connect()
+    await vi.advanceTimersByTimeAsync(0) // flush open
+    MockSocket.instances[0].onclose({ code: 1006 })
+    expect(w.vm.c.error.value).toBe('close 1006')
+    w.unmount()
+  })
+
   it('disconnect on unmount closes the socket and prevents further reconnects', async () => {
     vi.useFakeTimers()
     const w = mountChat()
