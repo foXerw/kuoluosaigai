@@ -35,10 +35,18 @@ describe('RULES_SECTIONS 内容（spec §6 大纲逐条 + §7 护栏表数值）
     expect(FLAT).toContain('门票')
   })
 
-  it('记录不经服务器存储，活在在场者浏览器；新人向在场者索取；最后一人离开即消失', () => {
+  it('记录不经服务器存储，活在在场者浏览器；新人向在场者索取；共识随最后一人亡故', () => {
     expect(FLAT).toContain('浏览器')
     expect(FLAT).toContain('向在场者索取')
-    expect(FLAT).toMatch(/最后一人[^。]*消失/)
+    expect(FLAT).toMatch(/最后一人[^。]*死亡/)
+    expect(FLAT).toMatch(/服务器[^。]*没剩/)
+  })
+
+  it('消亡表述对齐本地缓存实况：共识亡≠你失忆——残片留存可回看可转发，白纸仅限干净设备', () => {
+    expect(FLAT).toMatch(/残片|留在/)
+    expect(FLAT).toMatch(/干净设备[^。]*白纸/)
+    expect(FLAT).not.toContain('再进是张白纸，永远') // 旧绝对句不得回潮
+    expect(FLAT).not.toMatch(/永远。/)
   })
 
   it('未知 ID 拒绝：NO SUCH ROOM；乱猜撞墙：SLOW DOWN', () => {
