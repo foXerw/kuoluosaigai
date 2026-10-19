@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
+import { createRegistry, genRoomId } from './rooms.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 统一生产服务：同进程托管 dist/ 静态前端；可用 KUO_DIST_DIR 覆盖（测试用）
@@ -65,6 +66,17 @@ function genNick() {
 }
 
 const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与 NICK_CHARS 字符集一致（剔除 O/I/0/1）
+
+const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+// 消息 id 的进程级随机前缀（4 位 [a-z0-9]）：防服务器重启后新旧消息 id 相撞
+function genBootToken() {
+  let s = ''
+  for (let i = 0; i < 4; i++) {
+    s += ID_CHARS[Math.floor(Math.random() * ID_CHARS.length)]
+  }
+  return s
+}
 function isValidNick(n) {
   return typeof n === 'string' && NICK_RE.test(n)
 }
@@ -87,25 +99,39 @@ export function sweepClients(clients) {
   }
 }
 
-export function createServer() {
+export function createServer(opts = {}) {
+  const {
+    // 默认路径按 __dirname 解析（不随进程 cwd 漂移），KUO_ROOMS_FILE 可覆盖
+    roomsFile = process.env.KUO_ROOMS_FILE ?? path.resolve(__dirname, 'data', 'rooms.log'),
+    roomCap = 100,
+    // 以下护栏参数由 Task 3 接线：本任务只落默认值并记录滑动窗口（joinFails/creates），不做判定
+    historyRespMax = 200,
+    joinFailLimit = 10,
+    createLimit = 5,
+    countsBatchMax = 50,
+  } = opts
+
   const httpServer = http.createServer(serveStatic)
   const wss = new WebSocketServer({ server: httpServer })
-  const clients = new Map() // ws -> { nick, times: [] }
+  const registry = createRegistry(roomsFile)
+  const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates }
+  const rooms = new Map() // roomId -> Set<ws>
+  let connSeq = 0
+  let msgSeq = 0
+  const bootToken = genBootToken()
 
   function send(ws, frame) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
   }
 
-  function broadcast(frame, except = null) {
+  function sendToRoom(roomId, frame, except = null) {
+    const members = rooms.get(roomId)
+    if (!members) return
     const data = JSON.stringify(frame)
-    for (const ws of clients.keys()) {
+    for (const ws of members) {
       if (ws === except || ws.readyState !== ws.OPEN) continue
       ws.send(data)
     }
-  }
-
-  function broadcastPresence() {
-    broadcast({ type: 'presence', online: clients.size })
   }
 
   function rateLimited(info) {
@@ -116,6 +142,65 @@ export function createServer() {
     return false
   }
 
+  // 离开当前房（若有）：房内其余成员收 leave + presence
+  function removeFromRoom(ws, info) {
+    const roomId = info.roomId
+    if (!roomId) return
+    info.roomId = null
+    const members = rooms.get(roomId)
+    if (!members) return
+    members.delete(ws)
+    if (members.size === 0) {
+      rooms.delete(roomId)
+      return
+    }
+    sendToRoom(roomId, { type: 'leave', roomId, nick: info.nick, ts: now() }, ws)
+    sendToRoom(roomId, { type: 'presence', roomId, online: members.size }, ws)
+  }
+
+  // join 是原子的「离开旧房 + 进入新房」（同 ID 重复 join 视为幂等，只回 joined 回执）
+  function joinRoom(ws, info, roomId) {
+    if (info.roomId === roomId) {
+      const members = rooms.get(roomId)
+      send(ws, {
+        type: 'joined',
+        roomId,
+        online: members ? members.size : 0,
+        selfId: info.connId,
+      })
+      return
+    }
+    if (!registry.has(roomId)) {
+      info.joinFails.push(now()) // Task 3 节流用，此处仅记录
+      send(ws, { type: 'join-error', roomId, reason: 'unknown' })
+      return
+    }
+    let members = rooms.get(roomId)
+    if (!members) {
+      members = new Set()
+      rooms.set(roomId, members)
+    }
+    if (members.size >= roomCap) {
+      send(ws, { type: 'join-error', roomId, reason: 'full' })
+      return
+    }
+    removeFromRoom(ws, info)
+    info.roomId = roomId
+    members.add(ws)
+    sendToRoom(roomId, { type: 'join', roomId, nick: info.nick, ts: now() }, ws)
+    sendToRoom(roomId, { type: 'presence', roomId, online: members.size }, ws)
+    send(ws, { type: 'joined', roomId, online: members.size, selfId: info.connId })
+  }
+
+  function createRoom(ws, info) {
+    info.creates.push(now()) // Task 3 限速用，此处仅记录
+    let roomId = genRoomId()
+    while (registry.has(roomId)) roomId = genRoomId()
+    registry.add(roomId)
+    send(ws, { type: 'created', roomId })
+    joinRoom(ws, info, roomId)
+  }
+
   wss.on('connection', (ws, req) => {
     ws.isAlive = true
     ws.on('pong', () => {
@@ -123,12 +208,17 @@ export function createServer() {
     })
     const requested = new URL(req.url, 'http://localhost').searchParams.get('nick')
     const nick = isValidNick(requested) ? requested : genNick()
-    const info = { nick, times: [] }
+    const info = {
+      connId: ++connSeq,
+      nick,
+      roomId: null,
+      times: [],
+      joinFails: [],
+      creates: [],
+    }
     clients.set(ws, info)
 
     send(ws, { type: 'assign', nick })
-    broadcast({ type: 'join', nick, ts: now() }, ws)
-    broadcastPresence()
 
     ws.on('message', (raw) => {
       let frame
@@ -138,29 +228,48 @@ export function createServer() {
         send(ws, { type: 'error', msg: 'bad frame' })
         return
       }
-      if (frame.type !== 'message') return
-      if (rateLimited(info)) {
-        send(ws, { type: 'rate', ts: now() })
-        return
+      switch (frame.type) {
+        case 'join':
+          joinRoom(ws, info, String(frame.roomId ?? ''))
+          break
+        case 'create':
+          createRoom(ws, info)
+          break
+        case 'message': {
+          if (!info.roomId) {
+            send(ws, { type: 'error', msg: 'not in room' })
+            break
+          }
+          if (rateLimited(info)) {
+            send(ws, { type: 'rate', ts: now() })
+            break
+          }
+          const text = String(frame.text || '').slice(0, MAX_LEN)
+          const id = bootToken + (++msgSeq).toString(36)
+          sendToRoom(info.roomId, {
+            type: 'message',
+            id,
+            ts: now(),
+            roomId: info.roomId,
+            nick: info.nick,
+            badge: String(frame.badge || ''),
+            text,
+          })
+          break
+        }
+        default:
+          // history-req / history-res / counts（Task 3 接线）及未知帧：静默忽略（与 v1 一致）
+          break
       }
-      const text = String(frame.text || '').slice(0, MAX_LEN)
-      broadcast({
-        type: 'message',
-        nick,
-        badge: String(frame.badge || ''),
-        text,
-        ts: now(),
-      })
     })
 
     ws.on('close', () => {
       if (!clients.delete(ws)) return
-      broadcast({ type: 'leave', nick, ts: now() })
-      broadcastPresence()
+      removeFromRoom(ws, info)
     })
 
     ws.on('error', () => {
-      // swallow; the 'close' handler cleans up the clients map and broadcasts leave/presence
+      // swallow; the 'close' handler cleans up the maps and broadcasts leave/presence
     })
   })
 
@@ -168,7 +277,7 @@ export function createServer() {
     // swallow server-level socket errors
   })
 
-  // 保活心跳：每 HEARTBEAT_MS 扫描，无 pong 回应的死链被 terminate（触发 close → 清理 clients/online）
+  // 保活心跳：每 HEARTBEAT_MS 扫描，无 pong 回应的死链被 terminate（触发 close → 清理 clients/rooms）
   const heartbeat = setInterval(() => sweepClients(wss.clients), HEARTBEAT_MS)
 
   return {
@@ -182,6 +291,7 @@ export function createServer() {
         clearInterval(heartbeat)
         for (const ws of clients.keys()) ws.close()
         clients.clear()
+        rooms.clear()
         wss.close(() => httpServer.close(() => resolve()))
       })
     },
