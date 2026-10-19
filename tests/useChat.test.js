@@ -264,6 +264,19 @@ describe('useChat', () => {
       expect(c.messages.value[0].id).toBe('m101')
       expect(c.messages.value[499].id).toBe('m600')
     })
+
+    it('caps per-room sys lines at 200 (210 join frames in, oldest 10 dropped)', async () => {
+      const w = mountChat()
+      const c = w.vm.c
+      const s = await openChat(c, { room: 'setsubun', joined: 'setsubun' })
+      for (let i = 1; i <= 210; i++) {
+        s.emit({ type: 'join', roomId: 'setsubun', nick: `ANON-${i}`, ts: i })
+      }
+      const view = c.messages.value
+      expect(view).toHaveLength(200) // sys 封顶 200（对应服务端 switchLimit=20/60s 的客户端半）
+      expect(view[0].ts).toBe(11) // 最旧 10 条被丢弃
+      expect(view[199].ts).toBe(210) // 最新保留
+    })
   })
 
   describe('P2P history window', () => {

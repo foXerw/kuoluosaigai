@@ -9,6 +9,9 @@ const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与服务端 NICK_CHARS 一致（�
 const HISTORY_WINDOW_MS = 2000 // spec §7：history-res 收集窗口
 const HISTORY_RES_MAX = 200 // spec §7：历史响应每份上限（服务器同样硬截断，这里先自律）
 const NOTICE_MS = 5000 // joinNotice 自动清除
+// 每房本会话系统行封顶（丢最旧）：对应服务端切房成功节流 switchLimit=20/60s——
+// 高频 ping-pong 切房时两房的 join/leave/presence/rate 会持续灌入 sysByRoom，无界增长会冻死标签页
+const SYS_PER_ROOM_MAX = 200
 
 function readStoredNick() {
   try {
@@ -89,6 +92,8 @@ export function useChat(url, { badge = '' } = {}) {
       sysByRoom.set(roomId, arr)
     }
     arr.push(frame) // 帧只读引用存储，绝不原地修改（与 historyMerge/roomCache 共享引用）
+    // roomCache 同风格封顶：超长丢最旧，保留最新
+    if (arr.length > SYS_PER_ROOM_MAX) arr.splice(0, arr.length - SYS_PER_ROOM_MAX)
     cacheRev.value += 1
   }
 
