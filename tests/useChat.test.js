@@ -466,6 +466,33 @@ describe('useChat', () => {
       expect(c.joinNotice.value).toBe('')
     })
 
+    it('clears joinNotice on successful join; the stale 5s timer cannot clobber a later notice', async () => {
+      vi.useFakeTimers()
+      const w = mountChat()
+      const c = w.vm.c
+      c.connect('setsubun')
+      await vi.advanceTimersByTimeAsync(0)
+      const s = lastSocket()
+      // 输错 ID：NO SUCH ROOM 亮起（5s 定时器 A 起跑）
+      c.join('zzzzzz')
+      s.emit({ type: 'join-error', roomId: 'zzzzzz', reason: 'unknown' })
+      expect(c.joinNotice.value).toBe('NO SUCH ROOM')
+      await vi.advanceTimersByTimeAsync(1000)
+      // 随即加入有效房：joined 当场清提示——假报错窗口必须死（I-1）
+      c.join('setsubun')
+      s.emit({ type: 'joined', roomId: 'setsubun', online: 1, selfId: 1 })
+      expect(c.joinNotice.value).toBe('')
+      // 之后再挂新提示（定时器 B）：A 必须已随清提示被取消，t=5000 不得把 B 提前清掉
+      await vi.advanceTimersByTimeAsync(3000) // t=4000
+      c.join('packed')
+      s.emit({ type: 'join-error', roomId: 'packed', reason: 'full' })
+      expect(c.joinNotice.value).toBe('ROOM FULL')
+      await vi.advanceTimersByTimeAsync(1000) // t=5000：定时器 A 原到期点
+      expect(c.joinNotice.value).toBe('ROOM FULL')
+      await vi.advanceTimersByTimeAsync(4000) // t=9000：定时器 B 到期（4000+5s）
+      expect(c.joinNotice.value).toBe('')
+    })
+
     it('join-error full shows ROOM FULL', async () => {
       const w = mountChat()
       const c = w.vm.c
@@ -550,7 +577,7 @@ describe('useChat', () => {
       const s0 = MockSocket.instances[0]
       s0.emit({ type: 'assign', nick: 'ANON-KEEP' })
       c.join('nebula') // 落地 setsubun，但断开前人在 nebula
-      s0.emit({ type: 'joined', roomId: 'nebula', online: 1, selfId: 3 })
+      s0.emit({ type: 'joined', roomId: 'nebula', online: 2, selfId: 3 })
       s0.close()
       await vi.advanceTimersByTimeAsync(1000)
       // 重连 socket 的 0ms open 定时器是在 tick(1000) 内嵌套调度的，
@@ -560,6 +587,12 @@ describe('useChat', () => {
       expect(s1.url).toContain('nick=ANON-KEEP')
       expect(framesOf(s1)).toEqual([{ type: 'join', roomId: 'nebula' }]) // 优先断开前的 currentRoom
       expect(c.status.value).toBe('open')
+      // Review Focus #5 后半：重连入房与首次进入无异——online>1 即重新走历史窗口（spec §5.2.4）
+      s1.emit({ type: 'joined', roomId: 'nebula', online: 2, selfId: 4 })
+      expect(framesOf(s1)).toEqual([
+        { type: 'join', roomId: 'nebula' },
+        { type: 'history-req' },
+      ])
     })
 
     it('falls back to the landing room when no room was ever joined', async () => {

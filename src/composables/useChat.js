@@ -9,7 +9,6 @@ const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与服务端 NICK_CHARS 一致（�
 const HISTORY_WINDOW_MS = 2000 // spec §7：history-res 收集窗口
 const HISTORY_RES_MAX = 200 // spec §7：历史响应每份上限（服务器同样硬截断，这里先自律）
 const NOTICE_MS = 5000 // joinNotice 自动清除
-const MAX_PER_ROOM = 500 // spec §7：每房缓存上限（与 roomCache/mergeHistory 默认一致）
 
 function readStoredNick() {
   try {
@@ -104,8 +103,9 @@ export function useChat(url, { badge = '' } = {}) {
     const responses = []
     const timer = setTimeout(() => {
       histWindow = null
-      // 到点按开窗时的房间合并；responses 里的帧只读（mergeHistory 只取 .messages）
-      const merged = mergeHistory(cache.get(roomId), responses, { maxPerRoom: MAX_PER_ROOM })
+      // 到点按开窗时的房间合并；responses 里的帧只读（mergeHistory 只取 .messages）。
+      // 每房上限不在这里重复定义：mergeHistory 与 roomCache.replace 的默认 500 即唯一护栏常量（计划 Global Constraints）
+      const merged = mergeHistory(cache.get(roomId), responses)
       cache.replace(roomId, merged)
       cacheRev.value += 1
     }, HISTORY_WINDOW_MS)
@@ -114,6 +114,13 @@ export function useChat(url, { badge = '' } = {}) {
 
   function handleJoined(frame) {
     pendingRoomAction = null
+    // 入房成功即清提示：NO SUCH ROOM/ROOM FULL/SLOW DOWN 的假报错不得存活到 joined 之后；
+    // 5s 定时器一并取消（定时器同一性）——防止陈旧到期回调把之后的新提示提前清掉
+    if (noticeTimer) {
+      clearTimeout(noticeTimer)
+      noticeTimer = null
+    }
+    joinNotice.value = ''
     currentRoom.value = frame.roomId
     selfId.value = frame.selfId
     online.value = frame.online
