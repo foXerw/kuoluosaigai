@@ -35,11 +35,17 @@ function flush() {
   return new Promise((r) => setTimeout(r, 0))
 }
 
+function framesOf(s) {
+  return s.sent.map((d) => JSON.parse(d))
+}
+
 describe('ChatRoom', () => {
   let channel
   beforeEach(() => {
     MockSocket.instances = []
     global.WebSocket = MockSocket
+    sessionStorage.clear()
+    localStorage.clear()
     channel = CHANNELS.find((c) => c.prefix === 'SETSUBUN')
   })
   afterEach(() => {
@@ -52,17 +58,35 @@ describe('ChatRoom', () => {
     expect(MockSocket.instances).toHaveLength(0)
   })
 
-  it('renders connected status, online count, and messages with badge', async () => {
+  it('mount connects and sends a join frame for the channel room', async () => {
     const w = mount(ChatRoom, { props: { url: 'ws://x', channel } })
     await flush()
-    expect(w.text()).toContain('connected')
+    // open 后即发出频道 roomId 的 join 帧（v2：连接 ≠ 入房）
+    expect(framesOf(MockSocket.instances[0])).toEqual([{ type: 'join', roomId: 'setsubun' }])
+    expect(w.text()).toContain('ROOM --') // 尚未 joined：占位
+  })
+
+  it('joined frame drives the room indicator and online count; messages render with badge', async () => {
+    const w = mount(ChatRoom, { props: { url: 'ws://x', channel } })
+    await flush()
     const s = MockSocket.instances[0]
-    s.emit({ type: 'presence', online: 5 })
-    s.emit({ type: 'message', nick: 'ANON-7K2', badge: 'SETSUBUN', text: 'hello world', ts: Date.now() })
+    s.emit({ type: 'joined', roomId: 'setsubun', online: 5, selfId: 1 })
+    s.emit({
+      type: 'message',
+      id: 'x1',
+      ts: Date.now(),
+      roomId: 'setsubun',
+      nick: 'ANON-7K2Q',
+      badge: 'SETSUBUN',
+      text: 'hello world',
+    })
     await w.vm.$nextTick()
+    expect(w.text()).toContain('connected')
+    expect(w.text()).toContain('ROOM setsubun')
     expect(w.text()).toContain('hello world')
     expect(w.text()).toContain('5 online')
     expect(w.text()).toContain('SETSUBUN')
+    w.unmount() // 清掉 online>1 触发的 2s 历史窗口定时器
   })
 
   it('submits on enter, sends a message frame with badge, and clears the field', async () => {
@@ -71,11 +95,9 @@ describe('ChatRoom', () => {
     const s = MockSocket.instances[0]
     await w.find('input').setValue('hi there')
     await w.find('form').trigger('submit')
-    expect(s.sent).toHaveLength(1)
-    const sent = JSON.parse(s.sent[0])
-    expect(sent.type).toBe('message')
-    expect(sent.text).toBe('hi there')
-    expect(sent.badge).toBe('SETSUBUN')
+    const sent = framesOf(s)
+    expect(sent[0]).toEqual({ type: 'join', roomId: 'setsubun' })
+    expect(sent[1]).toEqual({ type: 'message', text: 'hi there', badge: 'SETSUBUN' })
     expect(w.find('input').element.value).toBe('')
   })
 
@@ -84,7 +106,8 @@ describe('ChatRoom', () => {
     await flush()
     await w.find('input').setValue('   ')
     await w.find('form').trigger('submit')
-    expect(MockSocket.instances[0].sent).toHaveLength(0)
+    // 只有 mount 时的 join 帧，没有 message
+    expect(framesOf(MockSocket.instances[0])).toEqual([{ type: 'join', roomId: 'setsubun' }])
   })
 
   it('emits close on close button and on Escape', async () => {

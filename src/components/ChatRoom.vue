@@ -1,7 +1,7 @@
 <template>
   <div class="chat">
     <div class="chat__top">
-      <span class="chat__chan">● CHANNEL // GLOBAL</span>
+      <span class="chat__chan">● ROOM {{ currentRoom ?? '--' }}</span>
       <span class="chat__meta">{{ online }} online · {{ statusLabel }}</span>
       <button class="chat__close" @click="$emit('close')">✕</button>
     </div>
@@ -50,8 +50,7 @@ export default {
   },
   emits: ['close'],
   setup(props, { emit }) {
-    const badge = props.channel?.prefix || ''
-    const chat = useChat(props.url, badge)
+    const chat = useChat(props.url, { badge: props.channel?.prefix || '' })
     const draft = ref('')
     const listEl = ref(null)
 
@@ -89,7 +88,7 @@ export default {
     }
 
     onMounted(() => {
-      chat.connect()
+      chat.connect(props.channel?.roomId) // open 后自动 join 落地房；重连时 useChat 优先回断开前的房间
       window.addEventListener('keydown', onKey)
       nextTick(scrollToBottom)
     })
@@ -108,6 +107,7 @@ export default {
       status: chat.status,
       error: chat.error,
       nick: chat.nick,
+      currentRoom: chat.currentRoom,
       messages: chat.messages,
       online: chat.online,
       draft,
