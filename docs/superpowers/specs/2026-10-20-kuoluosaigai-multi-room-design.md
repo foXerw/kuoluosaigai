@@ -74,7 +74,8 @@ clients: Map<ws, {nick, roomId, times[], connId}>
 | `{type:'created', roomId}` | 建房回执 |
 | `{type:'joined', roomId, online, selfId}` | 加入成功；`selfId` 供 history-res 的 `to` 引用 |
 | `{type:'join-error', roomId, reason}` | `unknown` \| `full` |
-| `{type:'presence', roomId, online, events}` | 当前房的进出事件与在线数（v1 全局 presence/join/leave 改为按房） |
+| `{type:'presence', roomId, online}` | 当前房在线数变化 |
+| `{type:'join'/'leave', roomId, nick, ts}` | 当前房成员进出事件（v1 全局 presence/join/leave 改为按房） |
 | `{type:'message', id, ts, nick, badge, text}` | **新增 `id`（服务器发的短唯一号）与 `ts`**，用于 P2P 历史去重排序 |
 | `{type:'history-req', from}` | 房内转发来的历史请求（`from` = 请求者 connId，即回包时的 `to`） |
 | `{type:'history-res', roomId, from, messages}` | 路由给请求者的历史响应（服务器仅当**响应者与请求者当前同房**时投递；客户端合并前校验 `roomId === 当前房`，双保险防跨房污染） |
