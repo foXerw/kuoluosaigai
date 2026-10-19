@@ -128,6 +128,12 @@ export default {
     },
     closeChat() {
       this.chatOpen = false
+      // 色随房收尾：ChatRoom 期间可能把 --app-color/--app-glow 切去了别的房；
+      // channel watcher 值未变不会重放，这里显式恢复落地频道色
+      if (typeof document !== 'undefined') {
+        document.documentElement.style.setProperty('--app-color', this.currentColor)
+        document.documentElement.style.setProperty('--app-glow', this.currentGlow)
+      }
     },
     reshuffle() {
       this.channel = reshuffleChannel()

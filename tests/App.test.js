@@ -14,6 +14,15 @@ describe('App', () => {
     ChatRoom: true,
   }
 
+  // enter/close 交互桩：shell 点击 → enter；chat 点击 → close
+  const enterStubs = {
+    'a-config-provider': { template: '<div><slot /></div>' },
+    BootSequence: true,
+    ScanlineWipe: true,
+    ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'enter\')" />', emits: ['enter', 'reshuffle'] },
+    ChatRoom: { name: 'ChatRoom', template: '<div class="chat-stub" @click="$emit(\'close\')" />', emits: ['close'] },
+  }
+
   it('starts in boot phase with only BootSequence mounted', () => {
     const wrapper = mount(App, { global: { stubs } })
     expect(wrapper.find('.boot-stub').exists()).toBe(true)
@@ -79,13 +88,6 @@ describe('App', () => {
   })
 
   it('opens ChatRoom on ChannelShell enter and closes on chat close', async () => {
-    const enterStubs = {
-      'a-config-provider': { template: '<div><slot /></div>' },
-      BootSequence: true,
-      ScanlineWipe: true,
-      ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'enter\')" />', emits: ['enter', 'reshuffle'] },
-      ChatRoom: { name: 'ChatRoom', template: '<div class="chat-stub" @click="$emit(\'close\')" />', emits: ['close'] },
-    }
     const wrapper = mount(App, { global: { stubs: enterStubs } })
     wrapper.vm.onReady()
     wrapper.vm.onWipeDone()
@@ -98,6 +100,27 @@ describe('App', () => {
     await wrapper.find('.chat-stub').trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.chat-stub').exists()).toBe(false)
+  })
+
+  it('closeChat restores --app-color/--app-glow to the landing channel (色随房收尾)', async () => {
+    const magenta = CHANNELS.find((c) => c.prefix === 'MAGENTA')
+    sessionStorage.setItem('kuoluosaigai:channel', magenta.freq)
+    const wrapper = mount(App, { global: { stubs: enterStubs } })
+    wrapper.vm.onReady()
+    wrapper.vm.onWipeDone()
+    await wrapper.vm.$nextTick()
+    expect(document.documentElement.style.getPropertyValue('--app-color')).toBe(magenta.color)
+
+    await wrapper.find('.shell-stub').trigger('click') // openChat
+    // 模拟色随房：ChatRoom 期间把主题色切去了别的房（channel watcher 不会重放）
+    document.documentElement.style.setProperty('--app-color', '#22d3ee')
+    document.documentElement.style.setProperty('--app-glow', '#22d3ee')
+    await wrapper.find('.chat-stub').trigger('click') // closeChat
+
+    expect(document.documentElement.style.getPropertyValue('--app-color')).toBe(magenta.color)
+    expect(document.documentElement.style.getPropertyValue('--app-glow')).toBe(magenta.glow)
+    document.documentElement.style.removeProperty('--app-color')
+    document.documentElement.style.removeProperty('--app-glow')
   })
 })
 
