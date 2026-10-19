@@ -320,19 +320,22 @@ describe('chat server', () => {
       conn.ws.close()
     })
 
-    it('errors on message before join and stays silent on Task-3 frames', async () => {
+    it('errors on message before join and drops relay frames when outside a room', async () => {
       await boot()
       const conn = await connect()
       await nextFrame(conn.received) // assign
       send(conn, { type: 'message', text: 'orphan', badge: '' })
       const err = await nextFrame(conn.received)
       expect(err).toEqual({ type: 'error', msg: 'not in room' })
-      // history-req/history-res/counts 由 Task 3 接线：本任务必须静默忽略而非报错
+      // Task 3 语义：history-req 请求者本就不收；history-res 同房校验失败整帧丢弃
       send(conn, { type: 'history-req' })
       send(conn, { type: 'history-res', roomId: 'nebula', to: 1, messages: [] })
-      send(conn, { type: 'counts', roomIds: ['nebula'] })
       await settle()
       expect(conn.received).toHaveLength(0)
+      // counts 与入房无关：接线后不再静默，直接应答请求者
+      send(conn, { type: 'counts', roomIds: ['nebula'] })
+      const counted = await nextFrame(conn.received)
+      expect(counted).toEqual({ type: 'counts', counts: { nebula: 0 } })
       conn.ws.close()
     })
 
@@ -355,6 +358,192 @@ describe('chat server', () => {
       const joined = await joinRoom(b, roomId)
       expect(joined).toMatchObject({ type: 'joined', roomId, online: 1 })
       b.ws.close()
+    })
+  })
+
+  describe('history relay, counts and script guards', () => {
+    it('relays history-req to same-room peers only, stamped with the requester selfId', async () => {
+      await boot()
+      const a = await connect('?nick=ANON-AAAA')
+      const b = await connect('?nick=ANON-BBBB')
+      const c = await connect('?nick=ANON-CCCC')
+      await nextFrame(a.received)
+      await nextFrame(b.received)
+      await nextFrame(c.received)
+      const joinedA = await joinRoom(a, 'setsubun')
+      await joinRoom(b, 'setsubun')
+      await joinRoom(c, 'nebula')
+      await nextFrame(a.received) // join(b)
+      await nextFrame(a.received) // presence(2)
+      send(a, { type: 'history-req' })
+      const req = await nextFrame(b.received)
+      expect(req).toEqual({ type: 'history-req', roomId: 'setsubun', from: joinedA.selfId })
+      await settle()
+      expect(a.received).toHaveLength(0) // 请求者不收（自己就是响应者）
+      expect(c.received).toHaveLength(0) // 房外同伴收不到
+      a.ws.close()
+      b.ws.close()
+      c.ws.close()
+    })
+
+    it('delivers history-res to the requester after the three-way same-room check', async () => {
+      await boot()
+      const a = await connect()
+      const b = await connect()
+      await nextFrame(a.received)
+      await nextFrame(b.received)
+      const joinedA = await joinRoom(a, 'setsubun')
+      const joinedB = await joinRoom(b, 'setsubun')
+      await nextFrame(a.received) // join(b)
+      await nextFrame(a.received) // presence(2)
+      const msgs = [
+        { id: 'x1', ts: 1, roomId: 'setsubun' },
+        { id: 'x2', ts: 2, roomId: 'setsubun' },
+        { id: 'x3', ts: 3, roomId: 'setsubun' },
+      ]
+      send(b, { type: 'history-res', roomId: 'setsubun', to: joinedA.selfId, messages: msgs })
+      const res = await nextFrame(a.received)
+      expect(res).toEqual({ type: 'history-res', roomId: 'setsubun', from: joinedB.selfId, messages: msgs })
+      await settle()
+      expect(b.received).toHaveLength(0) // 响应者没有额外回执
+      a.ws.close()
+      b.ws.close()
+    })
+
+    it('drops history-res when the requester has switched to another room', async () => {
+      await boot()
+      const a = await connect()
+      const b = await connect()
+      await nextFrame(a.received)
+      await nextFrame(b.received)
+      const joinedA = await joinRoom(a, 'setsubun')
+      await joinRoom(b, 'setsubun')
+      await nextFrame(a.received) // join(b)
+      await nextFrame(a.received) // presence(2)
+      await joinRoom(a, 'nebula') // A 切房，selfId 不变
+      await nextFrame(b.received) // leave(a)
+      await nextFrame(b.received) // presence(1)
+      // 跨房污染用例：B 迟发指向旧房 setsubun 的 history-res，目标校验失败 → 整帧丢弃
+      send(b, {
+        type: 'history-res',
+        roomId: 'setsubun',
+        to: joinedA.selfId,
+        messages: [{ id: 'x1', ts: 1, roomId: 'setsubun' }],
+      })
+      await settle()
+      expect(a.received).toHaveLength(0)
+      expect(b.received).toHaveLength(0) // 丢弃无回执、无错误帧
+      a.ws.close()
+      b.ws.close()
+    })
+
+    it('truncates history-res messages to the last historyRespMax entries', async () => {
+      await boot({ historyRespMax: 2 })
+      const a = await connect()
+      const b = await connect()
+      await nextFrame(a.received)
+      await nextFrame(b.received)
+      const joinedA = await joinRoom(a, 'setsubun')
+      await joinRoom(b, 'setsubun')
+      await nextFrame(a.received) // join(b)
+      await nextFrame(a.received) // presence(2)
+      send(b, {
+        type: 'history-res',
+        roomId: 'setsubun',
+        to: joinedA.selfId,
+        messages: [
+          { id: 'm1', ts: 1, roomId: 'setsubun' },
+          { id: 'm2', ts: 2, roomId: 'setsubun' },
+          { id: 'm3', ts: 3, roomId: 'setsubun' },
+        ],
+      })
+      const res = await nextFrame(a.received)
+      expect(res.type).toBe('history-res')
+      expect(res.messages.map((m) => m.id)).toEqual(['m2', 'm3']) // 保留最后 2 条
+      a.ws.close()
+      b.ws.close()
+    })
+
+    it('answers counts with online numbers for registered ids and omits unknown ids', async () => {
+      await boot()
+      const a = await connect()
+      await nextFrame(a.received) // assign
+      send(a, { type: 'create' })
+      const created = await nextFrame(a.received)
+      await nextFrame(a.received) // joined
+      send(a, { type: 'counts', roomIds: ['nebula', created.roomId, 'zzzzzz'] })
+      const f = await nextFrame(a.received)
+      // 精确匹配：nebula 无人在线为 0，私房在线 1，未知 ID 键缺席
+      expect(f).toEqual({ type: 'counts', counts: { nebula: 0, [created.roomId]: 1 } })
+      a.ws.close()
+    })
+
+    it('silently truncates counts batches beyond countsBatchMax', async () => {
+      await boot({ countsBatchMax: 2 })
+      const conn = await connect()
+      await nextFrame(conn.received) // assign
+      send(conn, { type: 'counts', roomIds: ['nebula', 'setsubun', 'magenta', 'amber'] })
+      const f = await nextFrame(conn.received)
+      expect(f).toEqual({ type: 'counts', counts: { nebula: 0, setsubun: 0 } }) // 取前 2 个，静默不报错
+      conn.ws.close()
+    })
+
+    it('rate-limits all further joins once the unknown-fail window saturates', async () => {
+      await boot({ joinFailLimit: 2 })
+      const conn = await connect()
+      await nextFrame(conn.received) // assign
+      const e1 = await joinRoom(conn, 'zzz001')
+      expect(e1).toMatchObject({ type: 'join-error', reason: 'unknown' })
+      const e2 = await joinRoom(conn, 'zzz002')
+      expect(e2).toMatchObject({ type: 'join-error', reason: 'unknown' })
+      // 窗口饱和后合法 ID 也一律 rate，不再探测注册表
+      const third = await joinRoom(conn, 'nebula')
+      expect(third).toMatchObject({ type: 'rate' })
+      await settle()
+      expect(conn.received).toHaveLength(0) // rate 之外没有 joined/join-error 尾巴
+      conn.ws.close()
+    })
+
+    it('does not count join-error:full toward the join-fail window', async () => {
+      await boot({ roomCap: 1, joinFailLimit: 1 })
+      const a = await connect()
+      await nextFrame(a.received)
+      await joinRoom(a, 'amber')
+      const b = await connect()
+      await nextFrame(b.received)
+      const full = await joinRoom(b, 'amber')
+      expect(full).toEqual({ type: 'join-error', roomId: 'amber', reason: 'full' })
+      // full 不计入失败窗：紧随其后的合法 join 仍应成功
+      const joined = await joinRoom(b, 'setsubun')
+      expect(joined).toMatchObject({ type: 'joined', roomId: 'setsubun' })
+      // limit=1：一次 unknown 即饱和，其后 join 一律 rate
+      const unknown = await joinRoom(b, 'zzz999')
+      expect(unknown).toMatchObject({ type: 'join-error', reason: 'unknown' })
+      const rate = await joinRoom(b, 'nebula')
+      expect(rate).toMatchObject({ type: 'rate' })
+      a.ws.close()
+      b.ws.close()
+    })
+
+    it('rate-limits create beyond the window without touching the registry file', async () => {
+      const roomsFile = path.join(TMP_ROOT, 'create-limit.log')
+      await boot({ roomsFile, createLimit: 1 })
+      const conn = await connect()
+      await nextFrame(conn.received) // assign
+      send(conn, { type: 'create' })
+      const created = await nextFrame(conn.received)
+      expect(created.type).toBe('created')
+      await nextFrame(conn.received) // joined
+      const countLines = () =>
+        fs.readFileSync(roomsFile, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean).length
+      const before = countLines()
+      send(conn, { type: 'create' })
+      const f = await nextFrame(conn.received)
+      expect(f).toMatchObject({ type: 'rate' })
+      await settle()
+      expect(conn.received).toHaveLength(0) // 超限时不得有 created/joined 回执
+      expect(countLines()).toBe(before) // 且完全没有落盘
+      conn.ws.close()
     })
   })
 })

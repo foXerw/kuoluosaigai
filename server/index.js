@@ -104,7 +104,6 @@ export function createServer(opts = {}) {
     // 默认路径按 __dirname 解析（不随进程 cwd 漂移），KUO_ROOMS_FILE 可覆盖
     roomsFile = process.env.KUO_ROOMS_FILE ?? path.resolve(__dirname, 'data', 'rooms.log'),
     roomCap = 100,
-    // 以下护栏参数由 Task 3 接线：本任务只落默认值并记录滑动窗口（joinFails/creates），不做判定
     historyRespMax = 200,
     joinFailLimit = 10,
     createLimit = 5,
@@ -116,6 +115,7 @@ export function createServer(opts = {}) {
   const registry = createRegistry(roomsFile)
   const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates }
   const rooms = new Map() // roomId -> Set<ws>
+  const byConnId = new Map() // selfId(connId) -> ws：history-res 点对点路由用，入房登记、断连删除
   let connSeq = 0
   let msgSeq = 0
   const bootToken = genBootToken()
@@ -140,6 +140,15 @@ export function createServer(opts = {}) {
     if (info.times.length >= RATE_LIMIT) return true
     info.times.push(t)
     return false
+  }
+
+  // 反脚本滑窗判定：60s 内事件（unknown 失败 / 建房）达到 limit 次即饱和；剪枝就地回写
+  function windowSaturated(events, limit) {
+    const t = now()
+    const kept = events.filter((x) => t - x < RATE_WINDOW)
+    events.length = 0
+    events.push(...kept)
+    return kept.length >= limit
   }
 
   // 离开当前房（若有）：房内其余成员收 leave + presence
@@ -171,7 +180,7 @@ export function createServer(opts = {}) {
       return
     }
     if (!registry.has(roomId)) {
-      info.joinFails.push(now()) // Task 3 节流用，此处仅记录
+      info.joinFails.push(now()) // 计入滑窗；full 不走此分支、不计入
       send(ws, { type: 'join-error', roomId, reason: 'unknown' })
       return
     }
@@ -187,13 +196,14 @@ export function createServer(opts = {}) {
     removeFromRoom(ws, info)
     info.roomId = roomId
     members.add(ws)
+    byConnId.set(info.connId, ws) // 入房登记，供 history-res 按 selfId 点对点路由
     sendToRoom(roomId, { type: 'join', roomId, nick: info.nick, ts: now() }, ws)
     sendToRoom(roomId, { type: 'presence', roomId, online: members.size }, ws)
     send(ws, { type: 'joined', roomId, online: members.size, selfId: info.connId })
   }
 
   function createRoom(ws, info) {
-    info.creates.push(now()) // Task 3 限速用，此处仅记录
+    info.creates.push(now()) // 滑窗内建房计数（判定在 message 处理器的闸门）
     let roomId = genRoomId()
     while (registry.has(roomId)) roomId = genRoomId()
     registry.add(roomId)
@@ -230,9 +240,18 @@ export function createServer(opts = {}) {
       }
       switch (frame.type) {
         case 'join':
+          // 反探测闸门：unknown 失败饱和后，后续 join（哪怕合法 ID）一律 rate、不再查注册表
+          if (windowSaturated(info.joinFails, joinFailLimit)) {
+            send(ws, { type: 'rate', ts: now() })
+            break
+          }
           joinRoom(ws, info, String(frame.roomId ?? ''))
           break
         case 'create':
+          if (windowSaturated(info.creates, createLimit)) {
+            send(ws, { type: 'rate', ts: now() })
+            break
+          }
           createRoom(ws, info)
           break
         case 'message': {
@@ -257,14 +276,49 @@ export function createServer(opts = {}) {
           })
           break
         }
+        case 'history-req': {
+          // 只中继给同房其他人（except=ws 让请求者天然不收）；未入房无中继对象，静默丢弃
+          if (!info.roomId) break
+          sendToRoom(
+            info.roomId,
+            { type: 'history-req', roomId: info.roomId, from: info.connId },
+            ws
+          )
+          break
+        }
+        case 'history-res': {
+          // 防跨房污染：发送者当前房 === 帧 roomId === 目标当前房，任一不符整帧丢弃
+          const roomId = String(frame.roomId ?? '')
+          const target = byConnId.get(frame.to)
+          const tinfo = target ? clients.get(target) : null
+          if (!tinfo || info.roomId !== roomId || tinfo.roomId !== roomId) break
+          const messages = Array.isArray(frame.messages)
+            ? frame.messages.slice(-historyRespMax)
+            : []
+          send(target, { type: 'history-res', roomId, from: info.connId, messages })
+          break
+        }
+        case 'counts': {
+          // 超批量静默截断；注册表内 ID 给在线数（可 0），未知 ID 键缺席
+          const ids = Array.isArray(frame.roomIds) ? frame.roomIds.slice(0, countsBatchMax) : []
+          const counts = {}
+          for (const id of ids) {
+            if (!registry.has(id)) continue
+            const members = rooms.get(id)
+            counts[id] = members ? members.size : 0
+          }
+          send(ws, { type: 'counts', counts })
+          break
+        }
         default:
-          // history-req / history-res / counts（Task 3 接线）及未知帧：静默忽略（与 v1 一致）
+          // 未知帧：静默忽略（与 v1 一致）
           break
       }
     })
 
     ws.on('close', () => {
       if (!clients.delete(ws)) return
+      byConnId.delete(info.connId)
       removeFromRoom(ws, info)
     })
 
@@ -292,6 +346,7 @@ export function createServer(opts = {}) {
         for (const ws of clients.keys()) ws.close()
         clients.clear()
         rooms.clear()
+        byConnId.clear()
         wss.close(() => httpServer.close(() => resolve()))
       })
     },
