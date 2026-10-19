@@ -76,7 +76,7 @@ clients: Map<ws, {nick, roomId, times[], connId}>
 | `{type:'join-error', roomId, reason}` | `unknown` \| `full` |
 | `{type:'presence', roomId, online}` | 当前房在线数变化 |
 | `{type:'join'/'leave', roomId, nick, ts}` | 当前房成员进出事件（v1 全局 presence/join/leave 改为按房） |
-| `{type:'message', id, ts, nick, badge, text}` | **新增 `id`（服务器发的短唯一号）与 `ts`**，用于 P2P 历史去重排序 |
+| `{type:'message', id, ts, roomId, nick, badge, text}` | **新增 `id`（服务器发的短唯一号）、`ts` 与 `roomId`**，分别用于 P2P 历史去重排序与客户端同房校验 |
 | `{type:'history-req', roomId, from}` | 房内转发来的历史请求（`from` = 请求者 selfId，即回包时的 `to`） |
 | `{type:'history-res', roomId, from, messages}` | 路由给请求者的历史响应（服务器仅当**响应者与请求者当前同房**时投递；客户端合并前校验 `roomId === 当前房`，双保险防跨房污染） |
 | `{type:'counts', counts}` | `{roomId: n}`（不存在的 ID 不出现，客户端显示 `--`） |
@@ -120,7 +120,7 @@ clients: Map<ws, {nick, roomId, times[], connId}>
 - **右侧抽屉「我的房间」**（覆盖在消息流上的终端面板，Esc 优先关抽屉再关房间）：
   - `PUBLIC` 区：四个公共房，名称+色点+在线数，点击即切换，不可删；
   - `MY ROOMS` 区：自己加入/创建的 ID，行内显示在线数、`⧉` 复制 ID、`✕` 从列表移除（仅本地）；
-  - 底部：`> join by id ____ ⏎` 输入加入（拒绝未知 ID）＋ `[+ NEW]` 建房（成功后自动入列并选中，弹终端风提示供复制/转发）。
+  - 底部：`> join by id ____ ⏎` 输入加入（拒绝未知 ID）＋ `[+ NEW]` 建房（新建成功后房间自动入列并被选中（▸），行内 `⧉` 复制转发即可——专用弹层提示判为冗余 UI，未实现）。
   - 抽屉打开时发一次 `counts` 批量刷新在线数。
 - **规则 Modal**：终端风全屏浮层（复用 v1 Modal 样式基调），中英混排，内容大纲：
   - 房间就是一个 6 位 ID；创建后永久存在，无法删除、无法改名；
@@ -147,6 +147,8 @@ clients: Map<ws, {nick, roomId, times[], connId}>
 | join 失败节流 | unknown 失败 ≤10 次/60s/连接 | server |
 | create 限速 | ≤5 次/60s/连接 | server |
 | counts 批量上限 | ≤50 个 ID/次（超出截断） | server |
+| 切房成功节流 | 20 次/60s/连接（同房重进不计；压制切房广播风暴） | server |
+| 系统行封顶 | 每房 200 条（丢最旧） | client |
 
 ## 8. 信任模型（明确接受，不实现缓解）
 

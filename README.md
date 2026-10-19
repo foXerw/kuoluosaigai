@@ -71,6 +71,10 @@ npm start            # 默认 http/ws://localhost:8080，平台用 PORT 环境�
 
 > 纯静态平台（Netlify / Vercel / Cloudflare Pages）不跑 `npm start`，只用 `npm run build` 的 `dist/`；此时聊天后端需在能跑 Node 的平台单独托管，并用上面的环境变量指过去。
 
+### 注册表必须可写且持久（`server/data/`）
+
+`server/data/rooms.log` 是整个服务**唯一的落盘**：append-only 的房间 ID 注册表（首次启动自动建目录并写入公共房种子）。部署时这个目录必须**可写**，且要**跨重启/重部署保留**——注册表一丢，所有私房 ID 集体失效、永别，只剩四个公共房被种子重新点亮，即规则页预告的「世界末日」彩蛋；对运维来说它就是事故。容器文件系统临时的平台（Render / Railway / Fly 免费版等）请把持久卷挂到 `server/data/`，或用环境变量 `KUO_ROOMS_FILE` 把注册表指到持久盘，否则「房间永存」的承诺不成立。
+
 ## 项目结构
 
 ```
