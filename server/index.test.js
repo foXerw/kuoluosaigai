@@ -239,13 +239,17 @@ describe('chat server', () => {
       await nextFrame(a.received)
       await nextFrame(mate.received)
       await nextFrame(c.received)
-      await joinRoom(a, 'setsubun')
-      await joinRoom(mate, 'setsubun')
+      const joinedA = await joinRoom(a, 'setsubun')
+      const joinedMate = await joinRoom(mate, 'setsubun')
       await nextFrame(a.received) // join(mate)
       await nextFrame(a.received) // presence(2)
       // A 切到 nebula：setsubun 的同伴收到 leave + presence{online:1}
       const joined = await joinRoom(a, 'nebula')
-      expect(joined).toEqual({ type: 'joined', roomId: 'nebula', online: 1, selfId: joined.selfId })
+      expect(joined).toMatchObject({ type: 'joined', roomId: 'nebula', online: 1 })
+      // selfId = 进程内连接号：是整数、跨切房稳定、不同连接互不相同
+      expect(Number.isInteger(joined.selfId)).toBe(true)
+      expect(joined.selfId).toBe(joinedA.selfId)
+      expect(joinedMate.selfId).not.toBe(joinedA.selfId)
       const leave = await nextFrame(mate.received)
       expect(leave).toMatchObject({ type: 'leave', roomId: 'setsubun', nick: 'ANON-AAAA' })
       const presence = await nextFrame(mate.received)
@@ -260,6 +264,27 @@ describe('chat server', () => {
       a.ws.close()
       mate.ws.close()
       c.ws.close()
+    })
+
+    it('re-joining the current room re-acks joined without any roommate churn', async () => {
+      await boot()
+      const a = await connect('?nick=ANON-AAAA')
+      const b = await connect('?nick=ANON-BBBB')
+      await nextFrame(a.received) // assign
+      await nextFrame(b.received) // assign
+      const joinedA = await joinRoom(a, 'magenta')
+      await joinRoom(b, 'magenta')
+      await nextFrame(a.received) // join(b)
+      await nextFrame(a.received) // presence(2)
+      // 幂等语义（Task 3 改造 joinRoom 时的回归钉）：重复 join 当前房只回 joined
+      const rejoin = await joinRoom(a, 'magenta')
+      expect(rejoin).toMatchObject({ type: 'joined', roomId: 'magenta', online: 2 })
+      expect(rejoin.selfId).toBe(joinedA.selfId)
+      await settle()
+      expect(a.received).toHaveLength(0)
+      expect(b.received).toHaveLength(0) // 同伴没有收到任何 leave/join/presence
+      a.ws.close()
+      b.ws.close()
     })
 
     it('rejects the third joiner when roomCap is reached', async () => {
