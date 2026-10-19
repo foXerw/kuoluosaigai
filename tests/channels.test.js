@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { CHANNELS, pickChannel, reshuffleChannel, codename } from '../src/theme/channels'
+import {
+  CHANNELS,
+  pickChannel,
+  reshuffleChannel,
+  codename,
+  PUBLIC_ROOM_IDS,
+  channelByRoomId,
+} from '../src/theme/channels'
 
 describe('channels', () => {
   beforeEach(() => sessionStorage.clear())
@@ -33,5 +40,24 @@ describe('channels', () => {
 
   it('codename formats as PREFIX-FREQ', () => {
     expect(codename(CHANNELS[0])).toBe(`${CHANNELS[0].prefix}-${CHANNELS[0].freq}`)
+  })
+
+  it('每项含 roomId 且等于 prefix 小写', () => {
+    for (const c of CHANNELS) {
+      expect(c).toHaveProperty('roomId')
+      expect(c.roomId).toBe(c.prefix.toLowerCase())
+    }
+  })
+
+  it('PUBLIC_ROOM_IDS 恰为四公共房（与 server/rooms.js 字面量镜像）', () => {
+    expect(PUBLIC_ROOM_IDS).toEqual(['setsubun', 'nebula', 'magenta', 'amber'])
+  })
+
+  it('channelByRoomId 命中返回对应频道（magenta → MAGENTA 前缀项而非 AMBER），未知返回 null', () => {
+    const c = channelByRoomId('magenta')
+    expect(c).toEqual(CHANNELS[2])
+    expect(c.prefix).toBe('MAGENTA')
+    expect(channelByRoomId('nope')).toBeNull()
+    expect(channelByRoomId(null)).toBeNull()
   })
 })

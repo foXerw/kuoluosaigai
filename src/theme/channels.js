@@ -1,9 +1,19 @@
+// roomId 为公共房稳定标识（prefix 小写）。
+// 注意：这四个字面量与 server/rooms.js 的 PUBLIC_ROOM_IDS 是双向镜像——
+// 任何一侧改动必须同步另一侧，否则前端预置房列表与服务端种子账本会静默分叉。
 export const CHANNELS = [
-  { freq: '7741', prefix: 'SETSUBUN', color: '#39ff14', glow: '#39ff14' },
-  { freq: '0313', prefix: 'NEBULA',   color: '#22d3ee', glow: '#22d3ee' },
-  { freq: '0990', prefix: 'MAGENTA',  color: '#ff2d95', glow: '#ff2d95' },
-  { freq: '1882', prefix: 'AMBER',    color: '#ffb000', glow: '#ffb000' },
+  { roomId: 'setsubun', freq: '7741', prefix: 'SETSUBUN', color: '#39ff14', glow: '#39ff14' },
+  { roomId: 'nebula',   freq: '0313', prefix: 'NEBULA',   color: '#22d3ee', glow: '#22d3ee' },
+  { roomId: 'magenta',  freq: '0990', prefix: 'MAGENTA',  color: '#ff2d95', glow: '#ff2d95' },
+  { roomId: 'amber',    freq: '1882', prefix: 'AMBER',    color: '#ffb000', glow: '#ffb000' },
 ]
+
+// 与 server/rooms.js PUBLIC_ROOM_IDS 字面量镜像（见上方注释）
+export const PUBLIC_ROOM_IDS = CHANNELS.map((c) => c.roomId)
+
+export function channelByRoomId(roomId) {
+  return CHANNELS.find((c) => c.roomId === roomId) ?? null
+}
 
 const STORAGE_KEY = 'kuoluosaigai:channel'
 
