@@ -58,6 +58,17 @@ describe('createRoomCache', () => {
     expect(cache.get('r1')).toEqual([])
   })
 
+  it('replace 新建房间超 maxRooms 同样触发 LRU 逐出', () => {
+    const cache = createRoomCache({ maxRooms: 2 })
+    cache.replace('r1', [msg('a', 1, 'r1')])
+    cache.replace('r2', [msg('b', 2, 'r2')])
+    cache.touch('r1') // r2 成为 LRU
+    cache.replace('r3', [msg('c', 3, 'r3')]) // 新建 r3 超限 → 逐 r2
+    expect(cache.get('r2')).toEqual([])
+    expect(cache.get('r1')).toHaveLength(1)
+    expect(cache.get('r3')).toHaveLength(1)
+  })
+
   it('get 也刷新 MRU：maxRooms=2，建 r1,r2，get r1，append r3 → r2 被逐', () => {
     const cache = createRoomCache({ maxRooms: 2 })
     cache.append('r1', msg('a', 1, 'r1'))
@@ -89,13 +100,14 @@ describe('createRoomCache', () => {
 
   it('drop/touch 未知房间是 no-op，不会凭空建房间', () => {
     const cache = createRoomCache({ maxRooms: 2 })
-    cache.drop('ghost')
-    cache.touch('ghost')
     cache.append('r1', msg('a', 1, 'r1'))
     cache.append('r2', msg('b', 2, 'r2'))
+    cache.touch('r1') // r1 换到 MRU，r2 成为合法的 LRU victim
+    cache.drop('ghost') // 未知房 drop：必须无痕迹
+    cache.touch('ghost') // 未知房 touch：若实现建档，幽灵会占坑连环挤出 r1（下方 get(r1) 即歼灭性断言）
     cache.append('r3', msg('c', 3, 'r3'))
-    // 若 ghost 曾被建成房间，r1/r2 会被连环逐出；此处只应逐出 r1
-    expect(cache.get('r2')).toHaveLength(1)
+    expect(cache.get('r2')).toEqual([]) // 正确行为：只逐合法 LRU（r2）
+    expect(cache.get('r1')).toHaveLength(1) // 幽灵若建档会挤掉 r1 —— 判别点
     expect(cache.get('r3')).toHaveLength(1)
   })
 
