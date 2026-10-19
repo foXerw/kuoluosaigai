@@ -108,12 +108,15 @@ export function createServer(opts = {}) {
     joinFailLimit = 10,
     createLimit = 5,
     countsBatchMax = 50,
+    switchLimit = 20, // 切房成功节流：每连接 60s 窗内「换房成功的 join」封顶（首次落地计入；幂等重进与失败帧不计）
   } = opts
 
   const httpServer = http.createServer(serveStatic)
-  const wss = new WebSocketServer({ server: httpServer })
+  // maxPayload=64KiB：中继帧字节上限。ws 默认 100MiB 会让单条超大 history-res
+  // 强制本进程 ~100MiB 的接收缓冲 + JSON.parse，一条帧即可压垮服务器
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: 64 * 1024 })
   const registry = createRegistry(roomsFile)
-  const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates }
+  const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates, switches }
   const rooms = new Map() // roomId -> Set<ws>
   const byConnId = new Map() // selfId(connId) -> ws：history-res 点对点路由用，入房登记、断连删除
   let connSeq = 0
@@ -196,6 +199,7 @@ export function createServer(opts = {}) {
     removeFromRoom(ws, info)
     info.roomId = roomId
     members.add(ws)
+    info.switches.push(now()) // 成功入房计入切房窗（unknown/full/幂等重进路径都不走到这里）
     byConnId.set(info.connId, ws) // 入房登记，供 history-res 按 selfId 点对点路由
     sendToRoom(roomId, { type: 'join', roomId, nick: info.nick, ts: now() }, ws)
     sendToRoom(roomId, { type: 'presence', roomId, online: members.size }, ws)
@@ -206,7 +210,13 @@ export function createServer(opts = {}) {
     info.creates.push(now()) // 滑窗内建房计数（判定在 message 处理器的闸门）
     let roomId = genRoomId()
     while (registry.has(roomId)) roomId = genRoomId()
-    registry.add(roomId)
+    try {
+      registry.add(roomId) // add 内部先写文件后入 Set：append 抛错时内存不会留下幽灵 ID
+    } catch {
+      // 注册表落盘失败（ENOSPC/EACCES/ENOENT…）：回错误帧、不入幻影房、进程照常服务
+      send(ws, { type: 'error', msg: 'registry write failed' })
+      return
+    }
     send(ws, { type: 'created', roomId })
     joinRoom(ws, info, roomId)
   }
@@ -225,6 +235,7 @@ export function createServer(opts = {}) {
       times: [],
       joinFails: [],
       creates: [],
+      switches: [], // 切房成功时刻的滑窗（push 见 joinRoom 成功路径）
     }
     clients.set(ws, info)
 
@@ -239,14 +250,22 @@ export function createServer(opts = {}) {
         return
       }
       switch (frame.type) {
-        case 'join':
+        case 'join': {
           // 反探测闸门：unknown 失败饱和后，后续 join（哪怕合法 ID）一律 rate、不再查注册表
           if (windowSaturated(info.joinFails, joinFailLimit)) {
             send(ws, { type: 'rate', ts: now() })
             break
           }
-          joinRoom(ws, info, String(frame.roomId ?? ''))
+          const roomId = String(frame.roomId ?? '')
+          // 切房成功闸门：切房窗饱和后，换房型 join 一律 rate、不执行任何房间变更；
+          // 幂等重进当前房不消耗预算（否则饱和后连 joined 回执都拿不到，重连语义被打破）
+          if (roomId !== info.roomId && windowSaturated(info.switches, switchLimit)) {
+            send(ws, { type: 'rate', ts: now() })
+            break
+          }
+          joinRoom(ws, info, roomId)
           break
+        }
         case 'create':
           if (windowSaturated(info.creates, createLimit)) {
             send(ws, { type: 'rate', ts: now() })

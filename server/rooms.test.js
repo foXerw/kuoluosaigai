@@ -56,6 +56,15 @@ describe('createRegistry', () => {
     expect(readLines(file)).toHaveLength(5)
   })
 
+  it('add() propagates a write failure without touching the in-memory Set (file first, then Set)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuo-'))
+    const file = path.join(dir, 'rooms.txt')
+    const reg = createRegistry(file)
+    fs.rmSync(dir, { recursive: true, force: true }) // 抽走父目录 → append 必抛 ENOENT
+    expect(() => reg.add('zz9999')).toThrow()
+    expect(reg.has('zz9999')).toBe(false) // 失败不留内存幽灵 ID（服务层据此可安全继续）
+  })
+
   it('reloads the ledger from disk on restart', () => {
     const file = tmpFile()
     createRegistry(file).add('abc123')

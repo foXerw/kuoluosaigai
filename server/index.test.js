@@ -525,6 +525,77 @@ describe('chat server', () => {
       b.ws.close()
     })
 
+    it('throttles successful switches past switchLimit; re-joins and failures do not consume budget', async () => {
+      await boot({ switchLimit: 2 })
+      const a = await connect('?nick=ANON-AAAA')
+      const mate = await connect('?nick=ANON-BBBB')
+      await nextFrame(a.received) // assign
+      await nextFrame(mate.received) // assign
+      // 成功 #1；其间一次 unknown 失败不计入切房窗（它从未进过房）
+      expect(await joinRoom(a, 'setsubun')).toMatchObject({ type: 'joined', roomId: 'setsubun' })
+      expect(await joinRoom(a, 'zzz999')).toMatchObject({ type: 'join-error', reason: 'unknown' })
+      // 成功 #2 → 切房窗饱和
+      expect(await joinRoom(a, 'magenta')).toMatchObject({ type: 'joined', roomId: 'magenta' })
+      // mate 进 a 当前房，成为「a 没离开」的证人
+      await joinRoom(mate, 'magenta')
+      await nextFrame(a.received) // join(mate)
+      await nextFrame(a.received) // presence(2)
+      // 饱和后幂等重进当前房：照常回 joined，不消耗预算、不产生房内 churn
+      expect(await joinRoom(a, 'magenta')).toMatchObject({ type: 'joined', roomId: 'magenta' })
+      await settle()
+      expect(a.received).toHaveLength(0)
+      expect(mate.received).toHaveLength(0)
+      // 第三次换房请求：窗口饱和 → rate 且不执行任何房间变更
+      expect(await joinRoom(a, 'nebula')).toMatchObject({ type: 'rate' })
+      expect(mate.received).toHaveLength(0) // a 没有离开 magenta（无幽灵 leave 广播）
+      // 仍在 magenta 的佐证：mate 断开后 a 照常收本房 leave/presence
+      mate.ws.close()
+      const leave = await nextFrame(a.received)
+      expect(leave).toMatchObject({ type: 'leave', roomId: 'magenta', nick: 'ANON-BBBB' })
+      a.ws.close()
+    })
+
+    it('closes a connection beyond the 64KiB relay frame ceiling and keeps the server alive', async () => {
+      await boot()
+      const a = await connect()
+      const b = await connect()
+      await nextFrame(a.received) // assign
+      await nextFrame(b.received) // assign
+      a.ws.on('error', () => {}) //  oversized 帧的后续 error 不作为用例失败
+      const closed = new Promise((resolve) => a.ws.on('close', (code) => resolve(code)))
+      a.ws.send('x'.repeat(64 * 1024 + 1))
+      expect(await closed).toBe(1009) // Message Too Big：ws 层直接掐断该连接
+      // 进程存活：另一条连接完全不受影响，入房、发言照常有回执
+      const joined = await joinRoom(b, 'nebula')
+      expect(joined).toMatchObject({ type: 'joined', roomId: 'nebula' })
+      send(b, { type: 'message', text: 'still alive', badge: '' })
+      const msg = await nextFrame(b.received)
+      expect(msg).toMatchObject({ type: 'message', roomId: 'nebula', text: 'still alive' })
+      b.ws.close()
+    })
+
+    it('survives a registry write failure: error frame, no phantom join, process alive', async () => {
+      const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'doomed-'))
+      const roomsFile = path.join(dir, 'rooms.log')
+      await boot({ roomsFile }) // 构造完成：种子已落盘、注册表加载进内存 Set
+      fs.rmSync(dir, { recursive: true, force: true }) // 事后抽走目录 → 后续 append 必抛 ENOENT
+      const conn = await connect()
+      await nextFrame(conn.received) // assign
+      send(conn, { type: 'create' })
+      const err = await nextFrame(conn.received)
+      expect(err).toEqual({ type: 'error', msg: 'registry write failed' })
+      await settle()
+      expect(conn.received).toHaveLength(0) // 不得有 created/joined 幽灵回执
+      expect(conn.ws.readyState).toBe(WebSocket.OPEN) // 连接继续存活
+      // 进程没死：新连接照常入房（读内存 Set 不依赖文件）
+      const b = await connect()
+      await nextFrame(b.received)
+      const joined = await joinRoom(b, 'nebula')
+      expect(joined).toMatchObject({ type: 'joined', roomId: 'nebula' })
+      conn.ws.close()
+      b.ws.close()
+    })
+
     it('rate-limits create beyond the window without touching the registry file', async () => {
       const roomsFile = path.join(TMP_ROOT, 'create-limit.log')
       await boot({ roomsFile, createLimit: 1 })
