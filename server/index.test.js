@@ -555,15 +555,19 @@ describe('chat server', () => {
       a.ws.close()
     })
 
-    it('closes a connection beyond the 64KiB relay frame ceiling and keeps the server alive', async () => {
+    it('closes a connection beyond the 256KiB relay frame ceiling; lawful-size frames pass through', async () => {
       await boot()
       const a = await connect()
       const b = await connect()
       await nextFrame(a.received) // assign
       await nextFrame(b.received) // assign
       a.ws.on('error', () => {}) //  oversized 帧的后续 error 不作为用例失败
-      const closed = new Promise((resolve) => a.ws.on('close', (code) => resolve(code)))
+      // R8：上限必须容下协议合法最坏帧（historyRespMax 200 × 280 CJK ≈184KB）——
+      // 64KiB 级大帧属合法尺寸，只许按坏 JSON 回执、不许 1009 掐断（旧 64KiB 上限在此必 RED）
       a.ws.send('x'.repeat(64 * 1024 + 1))
+      expect(await nextFrame(a.received)).toEqual({ type: 'error', msg: 'bad frame' })
+      const closed = new Promise((resolve) => a.ws.on('close', (code) => resolve(code)))
+      a.ws.send('x'.repeat(256 * 1024 + 1))
       expect(await closed).toBe(1009) // Message Too Big：ws 层直接掐断该连接
       // 进程存活：另一条连接完全不受影响，入房、发言照常有回执
       const joined = await joinRoom(b, 'nebula')

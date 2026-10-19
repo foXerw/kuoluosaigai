@@ -147,6 +147,7 @@ clients: Map<ws, {nick, roomId, times[], connId}>
 | join 失败节流 | unknown 失败 ≤10 次/60s/连接 | server |
 | create 限速 | ≤5 次/60s/连接 | server |
 | counts 批量上限 | ≤50 个 ID/次（超出截断） | server |
+| 中继帧字节上限 | 256 KiB/入站帧（须容合法最坏 history-res ≈184KB CJK；超限 ws 层 1009 断连） | server |
 | 切房成功节流 | 20 次/60s/连接（同房重进不计；压制切房广播风暴） | server |
 | 系统行封顶 | 每房 200 条（丢最旧） | client |
 

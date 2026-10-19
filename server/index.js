@@ -112,9 +112,11 @@ export function createServer(opts = {}) {
   } = opts
 
   const httpServer = http.createServer(serveStatic)
-  // maxPayload=64KiB：中继帧字节上限。ws 默认 100MiB 会让单条超大 history-res
-  // 强制本进程 ~100MiB 的接收缓冲 + JSON.parse，一条帧即可压垮服务器
-  const wss = new WebSocketServer({ server: httpServer, maxPayload: 64 * 1024 })
+  // maxPayload=256KiB（R8）：入站帧字节帽必须容下协议自身合法最坏帧——
+  // historyRespMax 200 × MAX_LEN 280 的 CJK history-res 上线 ≈184KB（UTF-8）再含信封；
+  // 同时把 ws 默认 100MiB 的杀伤面（单条超大帧强制 ~100MiB 接收缓冲 + JSON.parse）收紧 400 倍。
+  // 后续精化方向：解析后逐帧软弃（先验条数/字节再 JSON.parse），本轮不做。
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 })
   const registry = createRegistry(roomsFile)
   const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates, switches }
   const rooms = new Map() // roomId -> Set<ws>
