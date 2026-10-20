@@ -1,5 +1,8 @@
 # kuoluosaigai 聊天室技术文档
 
+> ⚠️ **历史文档（v2 单全局房间时代）**：v3 多聊天室上线后，本文的「无房间概念、单广播域、无持久化」等描述已过时。现行架构的权威描述请看
+> `docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md`（房间=纯 ID 注册表、按房路由、P2P 历史、护栏全集）；本文保留作 v2 决策记录，不再随功能更新。
+>
 > 对应实现：`server/index.js`（后端）、`src/composables/useChat.js`（传输层）、`src/components/ChatRoom.vue`（UI）、`src/App.vue`（接入）
 > 设计 spec：`docs/superpowers/specs/2026-06-27-kuoluosaigai-chatroom-design.md`
 

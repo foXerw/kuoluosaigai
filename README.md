@@ -4,13 +4,14 @@
 
 ![kuoluosaigai 主界面](docs/screenshot.png)
 
-打开站点，像在接入一个匿名频道：开机序列逐行打印日志、光标闪烁，按回车或点击屏幕，一道扫描线自上而下扫过，露出黑底扫描线的主界面。随机分到一个频道（绿/青/品红/琥珀），代号 + 频率显示在顶栏。点中央脉动的「进入聊天室」，服务端即时给你分配一个 `ANON-XXXX` 匿名代号，进入全屏终端聊天——消息即焚、无需登录、在线人数实时可见。
+打开站点，像在接入一个匿名频道：开机序列逐行打印日志、光标闪烁，按回车或点击屏幕，一道扫描线自上而下扫过，露出黑底扫描线的主界面。随机分到一个频道（绿/青/品红/琥珀），代号 + 频率显示在顶栏。点中央脉动的「进入聊天室」，服务端即时给你分配一个 `ANON-XXXX` 匿名代号，进入全屏终端聊天——消息即焚、无需登录、在线人数实时可见。还能开一个只有你知道 ID 的私房把朋友叫来：房间就是一个 6 位短码，服务器不存任何聊天记录，记忆只在在场者的浏览器之间流转。
 
 ## 特性
 
 - **开机序列 + 接入动画**：打字机式终端日志 + 闪烁光标；Enter 键 / 点击任意处触发，自上而下扫描线 wipe 露出主界面（三态相位 `boot → wiping → shell`，reduced-motion 直达终态）
 - **4 个随机频道**：SETSUBUN(绿) / NEBULA(青) / MAGENTA(品红) / AMBER(琥珀)，sessionStorage 持久，刷新不跳变；状态栏 🔄 RESHUFFLE 一键换频，主色经 CSS 变量 + Ant Design ConfigProvider 全局注入
-- **真匿名聊天室**：Node + WebSocket 自托管后端，随机昵称（不可自选）、单全局房间、频道徽章、纯文本 + 限速(10/min) + 长度截断(280)、真实在线计数、断线退避重连
+- **真匿名聊天室**：Node + WebSocket 自托管后端，随机昵称（不可自选）、频道徽章、纯文本 + 限速(10/min) + 长度截断(280)、真实在线计数、断线退避重连
+- **多聊天室**：房间 = 6 位 `[a-z0-9]` 短码 ID，除此之外零元数据。四个公共房承接抽签落地；抽屉里可新建私房（复制 ID 邀友）、按 ID 加入（未知 ID 拒绝——碰运气需要运气）、从列表移除。服务器没有房间目录、不可搜索；聊天记录**不落服务器**——记忆存在在场者的浏览器里，新人进入向在场者索取并多数派合并，最后一人离开，这段共同记忆就此消亡。护栏：100 人/房、历史 200 条/份、浏览器 LRU 20 房×500 条、输错 ID 10 次/分、建房 5 间/分、切房 20 次/分。站内 RULES 页向用户讲明全部规则
 - **终端风 favicon**：绿框 `K` + 扫描线 SVG 矢量图标
 - **降级**：尊重 `prefers-reduced-motion`，关动效直接显示终态；WS 端点未配置时聊天室显示离线文案不崩
 
@@ -19,30 +20,28 @@
 | 层 | 技术 |
 |---|---|
 | 前端 | Vue 3 + Ant Design Vue（魔改主题）+ Vitest。自定义创意做英雄区，Ant Design 做结构化面板 |
-| 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库、无持久化（状态全在进程内存） |
+| 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库；唯一落盘是房间 ID 注册表 `server/data/rooms.log`（append-only），消息内容永不落盘 |
 | 传输 | WebSocket，JSON 文本帧 |
 
-前端纯静态可托管到任意静态站；后端是独立常驻 Node 进程。详见 [`docs/chatroom-architecture.md`](docs/chatroom-architecture.md)。
+生产默认统一服务：一个 Node 进程同端口托管 `dist/` 静态与 WebSocket（见下方部署）。多房间协议与 P2P 记忆的现行权威文档：[`docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md`](docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md)；[`docs/chatroom-architecture.md`](docs/chatroom-architecture.md) 为 v2 时期的历史技术文档（含大量「为什么这么设计」的问答，但单房间设定已过时）。
 
 ## 本地开发
 
 ```bash
-# 前端
-npm install
-npm run dev            # = npm run serve，http://localhost:8080（被占用会自增端口）
+npm install                # workspaces 会同时装好 server/ 子包
+npm run dev                # 前端 http://localhost:8080（被占用会自增端口）
 
-# 后端聊天服务（另开终端）
-cd server && npm install && npm start    # 默认 ws://localhost:8080
+# 后端聊天服务（另开终端，换个端口避免打架）
+PORT=8081 npm start        # 未 build 时静态部分回 502 提示，不影响 ws；测试期可用 KUO_ROOMS_FILE=/tmp/rooms.log 隔离注册表
 
-# 让前端连到后端：项目根新建 .env.local
-echo "VUE_APP_WS_URL=ws://localhost:8080" > .env.local
+# 让 dev 前端连到本地后端：项目根新建 .env.local
+echo "VUE_APP_WS_URL=ws://localhost:8081" > .env.local
 ```
 
-打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化。
+打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化；一边 `[+ NEW]` 建个私房、把 6 位 ID 粘给另一边加入，再切回公共房切回来——历史记录仍在（P2P 记忆）。
 
 ```bash
-npm test               # 前端单测（vitest / jsdom，35 个）
-cd server && npm test  # 后端单测（vitest / node，4 个）
+npm test               # 前端 + 后端全量（现 182 个：jsdom 143 + node 39）
 npm run build          # 生产构建，产物在 dist/
 ```
 
@@ -79,19 +78,27 @@ npm start            # 默认 http/ws://localhost:8080，平台用 PORT 环境�
 
 ```
 server/
-  index.js                # Node+ws 聊天服务：昵称/广播/限速/截断/在线计数
+  index.js                # Node+ws 聊天服务：多房间路由/昵称/限速/截断/历史中继/护栏
+  rooms.js                # 房间 ID 注册表：genRoomId + append-only 落盘（唯一持久化）
   start.js                # 入口，读 PORT 启动
 src/
-  theme/channels.js       # 4 频道定义 + 抽签/重抽/代号
+  theme/channels.js       # 4 频道定义 + 抽签/重抽/公共房 ID 映射
+  chat/                   # 多房间纯逻辑模块（无 Vue 依赖，独立可测）
+    historyMerge.js       # P2P 历史合并：多数派佐证/去重/截断
+    roomCache.js          # 房间消息 LRU 缓存（20 房×500 条，纯内存）
+    roomList.js           # 我的房间列表（localStorage 只存 ID，公共房不可删）
+    rulesContent.js       # RULES 页文案（逐条对代码核真）
   composables/
     useTypewriter.js      # 打字机序列
-    useChat.js            # WebSocket 传输 + 状态（连接/昵称/消息/在线数/重连）
+    useChat.js            # WebSocket 传输 + 房间协议（join/create/切房/历史窗口/重连回房）
   components/
     BootSequence.vue      # 开机序列 + Enter/点击触发
     ScanlineWipe.vue      # 接入扫描线覆盖层
     ChannelShell.vue      # 主界面外壳（代号/状态栏/RESHUFFLE）
     CenterGate.vue        # 聊天室入口
-    ChatRoom.vue          # 全屏终端聊天 UI
+    ChatRoom.vue          # 全屏终端聊天 UI（顶栏/Esc 优先级/色随房）
+    RoomDrawer.vue        # 右侧房间抽屉（列表/加入/新建/复制/移除）
+    RulesModal.vue        # 规则浮层（房间生命周期与数据原理）
   styles/terminal.css     # 扫描线/噪点/辉光/降级
   App.vue                 # 装配：抽频道/主题注入/相位切换/聊天室接入
 public/
@@ -106,4 +113,5 @@ public/
 - [x] v1.1：接入动画补全（Enter 键 + 扫描线 wipe）
 - [x] v2：WebSocket 真匿名聊天室（随机昵称、单全局房间、频道徽章）
 - [x] 部署：统一服务打包（`npm install && npm run build && npm start`，静态 + ws 同 PORT，同源免配）
-- [ ] 后续：多房间、消息持久化/历史、后端水平扩展（Redis pub/sub）
+- [x] v3：多聊天室（纯 ID 房间、P2P 历史记忆、注册表落盘、反脚本护栏、RULES 页）
+- [ ] 后续：性能摸测与优化轮、后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
