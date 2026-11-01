@@ -52,15 +52,17 @@ function makeLeaseStub(tabId, table) {
   return { lease, calls }
 }
 
-// 审查轮 1 Finding #3：acquire 挂起在手动开闸的 Promise 上，制造 await 窗口竞态
+// 审查轮 1 Finding #3：acquire 挂起在手动开闸的 Promise 上，制造 await 窗口竞态。
+// 终审 #2 扩展：闸门改队列——双 start 竞态需要两个独立可开闸的 acquire。
+// openGate(v, idx)：默认开最早一个闸门（单 acquire 旧用法语义不变）；idx 指定制。
 function makeGatedLease(tabId, table) {
   const calls = { acquire: [], heartbeat: [], release: [], releaseAll: 0 }
-  let gate = null
+  const gates = []
   const lease = {
     acquire(id) {
       calls.acquire.push(id)
       return new Promise((resolve) => {
-        gate = { resolve: (v) => { if (v) table[id] = tabId; resolve(v) } }
+        gates.push({ id, resolve: (v) => { if (v) table[id] = tabId; resolve(v) } })
       })
     },
     release(id) {
@@ -75,7 +77,11 @@ function makeGatedLease(tabId, table) {
     isHeldElsewhere(id) { return !!table[id] && table[id] !== tabId },
     degraded: false,
   }
-  return { lease, calls, openGate: (v) => { const g = gate; gate = null; g.resolve(v) } }
+  const openGate = (v, idx = 0) => {
+    const g = gates.splice(idx, 1)[0]
+    g.resolve(v)
+  }
+  return { lease, calls, openGate, gateCount: () => gates.length }
 }
 
 function makeRunnerStub() {
@@ -263,6 +269,80 @@ describe('load/persist', () => {
   })
 })
 
+describe('非安全上下文构造不炸（终审 #1）', () => {
+  it('无 crypto.randomUUID 时 createBotStore（默认不带 deps.tabId）构造不抛——App created 白屏回归', () => {
+    vi.stubGlobal('crypto', {})
+    try {
+      let store
+      expect(() => {
+        store = createBotStore({
+          wsUrl: 'ws://test',
+          storage: makeMemStorage(),
+          sessionStorage: makeMemStorage(),
+          now: () => 0,
+          deps: { createRunner: makeRunnerStub().factory },
+        })
+      }).not.toThrow()
+      store.dispose()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('id 计数器对账（终审 #2）', () => {
+  it('load 含自造 id 的载荷后新建不撞号：botSeq/provSeq 回填 max+1', () => {
+    const payload = {
+      version: 1,
+      providers: [
+        { id: 'provider-0', name: 'A', baseUrl: 'https://a', apiKey: 'k' },
+        { id: 'provider-7', name: 'B', baseUrl: 'https://b', apiKey: 'k' },
+        { id: 'custom-x', name: 'C', baseUrl: 'https://c', apiKey: 'k' }, // 非自造格式：不参与对账
+      ],
+      bots: [
+        { id: 'bot-0', name: '零', roomId: 'r' },
+        { id: 'bot-3', name: '三', roomId: 'r' },
+        { id: 'legacy-abc', name: '旧', roomId: 'r' },
+      ],
+      lifetime: {},
+    }
+    const storage = makeMemStorage({ [CONFIG_KEY]: JSON.stringify(payload) })
+    const store = mkStore(storage)
+    expect(store.bots).toHaveLength(3)
+    expect(store.addProvider({ name: 'D', baseUrl: 'https://d', apiKey: '' }).provider.id).toBe('provider-8')
+    expect(store.addBot({ name: '新', roomId: 'r' })).toEqual({ ok: true })
+    expect(store.bots[3].id).toBe('bot-4') // 修复前：归零重放产 bot-0 撞号
+
+    // 空历史仍从 0 起（既往行为不变）
+    const fresh = mkStore(makeMemStorage())
+    expect(fresh.addBot({ name: 'n', roomId: 'r' })).toEqual({ ok: true })
+    expect(fresh.bots[0].id).toBe('bot-0')
+  })
+
+  it('载荷重复 id → 去重保首个；后续新建仍不撞号', () => {
+    const payload = {
+      version: 1,
+      providers: [
+        { id: 'provider-1', name: 'P1', baseUrl: 'https://p1', apiKey: 'k1' },
+        { id: 'provider-1', name: 'P1-dup', baseUrl: 'https://dup', apiKey: 'k2' },
+      ],
+      bots: [
+        { id: 'bot-0', name: '正本', roomId: 'r' },
+        { id: 'bot-0', name: '副本', roomId: 'r' },
+      ],
+      lifetime: {},
+    }
+    const storage = makeMemStorage({ [CONFIG_KEY]: JSON.stringify(payload) })
+    const store = mkStore(storage)
+    expect(store.bots).toHaveLength(1)
+    expect(store.bots[0].name).toBe('正本')
+    expect(store.providers).toHaveLength(1)
+    expect(store.providers[0].name).toBe('P1')
+    expect(store.addBot({ name: '新', roomId: 'r' })).toEqual({ ok: true })
+    expect(store.bots[1].id).toBe('bot-1')
+  })
+})
+
 describe('addBot', () => {
   it('addBot 第 6 个 → {error:"MAX_BOTS"}', () => {
     const { store } = setup()
@@ -396,6 +476,47 @@ describe('startBot 租约互斥', () => {
     expect(h.runnerStub.all.length).toBe(0) // 幽灵 runner 不得出现
     expect(table.b1).toBeUndefined() // 取得即归还
     expect(gated.calls.release).toContain('b1')
+  })
+
+  it('双 start 竞态（终审 #3）：被新 intent 顶掉的旧尝试绝不 release——胜出者租约不被误删；窗口期 status=connecting', async () => {
+    const table = {}
+    const gated = makeGatedLease('tab-A', table)
+    const h = setup({ leaseStub: gated })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    const p1 = h.store.startBot('b1') // token 1，挂在 acquire 上
+    const p2 = h.store.startBot('b1') // token 2 顶掉 token 1，也挂在 acquire 上
+    expect(gated.gateCount()).toBe(2)
+    // 双保险：acquire 前置 connecting → BotCard 启动钮（running 含 connecting 即禁用）窗口期不可再点
+    expect(h.store.bots[0].rt.status).toBe('connecting')
+
+    gated.openGate(true, 1) // 胜出者 p2 先取得租约（晚发的 acquire 先 resolve 的真实时序）
+    await expect(p2).resolves.toBe(true)
+    expect(table.b1).toBe('tab-A')
+
+    gated.openGate(true, 0) // 被顶掉的 p1 晚到——它的 ok 是旧尝试自己写的条目，不许代胜出者 release
+    await expect(p1).resolves.toBe(false)
+    expect(gated.calls.release).not.toContain('b1') // 被顶掉 ≠ 被撤销：静默退场不 release
+    expect(table.b1).toBe('tab-A') // 胜出者租约条目仍在（修复前这里被误删 → 心跳无从续期）
+    expect(h.runnerStub.all.length).toBe(1) // 只有 p2 建了 runner
+    expect(h.store.bots[0].rt.status).toBe('connecting')
+
+    h.advance(15000) // 心跳照常驱动，租约体系连续
+    expect(gated.calls.heartbeat).toEqual(['b1'])
+  })
+
+  it('acquire 失败（他 tab 持有）→ 窗口期 connecting 回滚 stopped 且 otherTab=true（终审 #3 双保险二）', async () => {
+    const table = { b1: 'tab-X' }
+    const gated = makeGatedLease('tab-A', table)
+    const h = setup({ leaseStub: gated })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    const p = h.store.startBot('b1')
+    expect(h.store.bots[0].rt.status).toBe('connecting') // 窗口期
+    gated.openGate(false) // 他 tab 新鲜持有 → false
+    await expect(p).resolves.toBe(false)
+    expect(h.store.bots[0].rt.otherTab).toBe(true)
+    expect(h.store.bots[0].rt.status).toBe('stopped') // 失败回滚，不永挂 CONNECTING 禁用启动钮
   })
 
   it('startBot 竞态守卫（审查轮 1 #3）：acquire 等待窗口内 stopBot → start 作废且租约归还，不静默复活', async () => {

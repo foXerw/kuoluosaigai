@@ -36,7 +36,10 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  */
 export function createTabLease({
   storage = globalThis.localStorage,
-  tabId = crypto.randomUUID(),
+  // 终审 #1：http 部署（非 secure context）没有 crypto.randomUUID——直接调用会
+  // TypeError 炸 App created()。tabId 只需同机唯一（跨 tab 互异即可），不需密码学强度：
+  // 时间戳 36 进制 + Math.random 熵足够，且两次构造几乎不可能重号。
+  tabId = globalThis.crypto?.randomUUID?.() ?? 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10),
   now = Date.now,
   sleep = defaultSleep,
 } = {}) {

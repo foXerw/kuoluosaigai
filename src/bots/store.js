@@ -175,15 +175,24 @@ export function createBotStore({
       const rt = item.rt
       rt.otherTab = false
       rt.error = null // null-as-absent 只作用于 runner patch 合并；store 主动复位
+      rt.status = 'connecting' // 终审 #3 双保险：acquire 窗口期即禁用启动钮，失败路径回滚
       const ok = await lease.acquire(id)
       // acquire 的 await 窗口内 removeBot/stopBot/dispose 插队 → 意图作废；
-      // 已取得的租约必须归还，否则本 bot 被幽灵持有着 60s 谁都起不来（审查轮 1 #3）
+      // 已取得的租约必须归还，否则本 bot 被幽灵持有着 60s 谁都起不来（审查轮 1 #3）。
+      // 终审 #3：区分「被顶掉」与「被撤销」——intent 槽仍挂着更新 token 说明胜出尝试
+      // 本就在为这条租约条目奔波，旧尝试 release 会误删胜出者刚写好的条目，且 heartbeat
+      // 不重建消失条目 → 跨 tab 互斥静默失效；被顶掉一律静默退场。
       if (disposed || intent.get(id) !== token || !findBot(id)) {
-        if (ok) lease.release(id)
+        if (intent.get(id) === undefined) {
+          // 撤销（stop/remove/dispose 清空意图）：无人认领已取得的租约，归还 + 回滚占位状态
+          if (ok) lease.release(id)
+          if (rt.status === 'connecting') rt.status = 'stopped'
+        }
         return false
       }
       if (!ok) {
         rt.otherTab = true
+        rt.status = 'stopped' // 终审 #3：失败回滚，别永挂 CONNECTING
         return false
       }
       const stale = runners.get(id) // 上次运行的实例（缓冲/终态遗留）：让位新 runner
@@ -202,7 +211,7 @@ export function createBotStore({
       }
       runners.set(id, runner)
       running.add(id)
-      rt.status = 'connecting'
+      // rt.status 已在 acquire 前置为 connecting（终审 #3 双保险），胜者直接续用
       const room = rt.roomId || item.roomId
       if (room) ensureScheduler(room)
       ensureTick()
@@ -396,13 +405,33 @@ export function createBotStore({
       return
     }
     resetState()
+    // 终审 #2：载荷内重复 id 去重保首个（历史污染数据防御——重复 id 会让
+    // findBot 恒中第一个、runners/lease 同键互踩、UI 删不净）
+    const seenProvider = new Set()
     for (const p of parsed.providers) {
-      if (p && typeof p === 'object' && typeof p.id === 'string') store.providers.push(normalizeProvider(p, p.id))
+      if (p && typeof p === 'object' && typeof p.id === 'string' && !seenProvider.has(p.id)) {
+        seenProvider.add(p.id)
+        store.providers.push(normalizeProvider(p, p.id))
+      }
     }
+    const seenBot = new Set()
     for (const c of parsed.bots) {
       if (!c || typeof c !== 'object') continue
       const cfg = normalizeCfg(c, '')
-      if (cfg.id) store.bots.push(makeBotItem(cfg))
+      if (cfg.id && !seenBot.has(cfg.id)) {
+        seenBot.add(cfg.id)
+        store.bots.push(makeBotItem(cfg))
+      }
+    }
+    // 终审 #2：id 计数器对账——扫已载入的自造 id 回填 botSeq/provSeq 到 max+1，
+    // 否则「刷新后新建」从 0 重放必撞号（本会话后续 persist 会永久污染载荷）
+    for (const b of store.bots) {
+      const m = /^bot-(\d+)$/.exec(b.id)
+      if (m) botSeq = Math.max(botSeq, Number(m[1]) + 1)
+    }
+    for (const p of store.providers) {
+      const m = /^provider-(\d+)$/.exec(p.id)
+      if (m) provSeq = Math.max(provSeq, Number(m[1]) + 1)
     }
     const lt = parsed.lifetime
     if (lt && typeof lt === 'object' && !Array.isArray(lt)) {

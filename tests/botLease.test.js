@@ -237,6 +237,44 @@ describe('租约值为坏 JSON', () => {
   })
 })
 
+describe('tabId 非安全上下文降级（终审 #1）', () => {
+  // http 部署（非 secure context）里 crypto.randomUUID 不存在——默认参数若直接调用
+  // 会 TypeError，App created() 白屏。降级 id 只要求同机唯一（两 tab 取值互异即可互斥）。
+  it('有 crypto 但无 randomUUID → 构造不抛，降级自造 tabId 且写入租约表可用', async () => {
+    const storage = makeStorage()
+    const sleep = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('crypto', {}) // 非安全上下文的典型形态：crypto 在、randomUUID 不在
+    try {
+      const lease = createTabLease({ storage, now: () => 1000, sleep })
+      await expect(lease.acquire(BOT_1)).resolves.toBe(true)
+      const table = JSON.parse(storage._map.get(LEASE_KEY))
+      expect(typeof table[BOT_1].tabId).toBe('string')
+      expect(table[BOT_1].tabId.length).toBeGreaterThan(0)
+
+      // 同机另一实例不得重号——否则两「tab」互认自家人，跨 tab 互斥静默失效
+      const storage2 = makeStorage()
+      const lease2 = createTabLease({ storage: storage2, now: () => 1000, sleep })
+      await lease2.acquire(BOT_1)
+      const table2 = JSON.parse(storage2._map.get(LEASE_KEY))
+      expect(table2[BOT_1].tabId).not.toBe(table[BOT_1].tabId)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('连 crypto 都没有 → 同样不抛', async () => {
+    const storage = makeStorage()
+    const sleep = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('crypto', undefined)
+    try {
+      const lease = createTabLease({ storage, now: () => 1000, sleep })
+      await expect(lease.acquire(BOT_1)).resolves.toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('heartbeat 边缘情况', () => {
   it('心跳条目不存在则不写', () => {
     const storage = makeStorage()
