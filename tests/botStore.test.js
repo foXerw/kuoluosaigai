@@ -7,7 +7,7 @@ import {
   PROVIDER_PRESETS,
 } from '../src/bots/store'
 import { createIdleScheduler } from '../src/bots/rhythm'
-import { createTabLease, LEASE_KEY } from '../src/bots/lease'
+import { createTabLease, LEASE_KEY, STALE_MS } from '../src/bots/lease'
 
 // Task 8 / spec §11「botStore」矩阵 + Review Focus 3/5：持久化 roundtrip（B15）、
 // 写失败降级（B17）、MAX_BOTS、租约互斥（B20 端到端）、闲置调度缝合、家族 nick、
@@ -631,5 +631,65 @@ describe('dispose', () => {
     expect(h.storage.setItem.mock.calls.filter((c) => c[0] === CONFIG_KEY).length).toBe(writes)
 
     await expect(h.store.startBot('b1')).resolves.toBe(false) // dispose 后拒绝再启动
+  })
+})
+
+describe('refreshLeases', () => {
+  // 审查轮 1 Finding #1：租约判定收口 store——组件不再复刻解析器。
+  // 语义：非运行态 bot 以 lease.isHeldElsewhere 重设 rt.otherTab；运行中（本 tab 持有着跑）不动。
+  it('他 tab 新鲜租约 → otherTab=true；条目消失 → 复位 false；运行中 bot 不被改写', async () => {
+    const h = setup({ table: {} })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    h.store.addBot({ id: 'b2', ...CFG, name: '二' })
+    expect(h.store.bots[0].rt.otherTab).toBe(false)
+
+    h.table.b1 = 'tab-X' // 他 tab 持有 b1
+    h.store.refreshLeases()
+    expect(h.store.bots[0].rt.otherTab).toBe(true)
+    expect(h.store.bots[1].rt.otherTab).toBe(false)
+
+    // 竞态回归：本 tab startBot 成功后 table.b2 是他 tab 覆盖写——运行态跳过，不误标
+    await h.store.startBot('b2')
+    expect(h.store.bots[1].rt.status).toBe('connecting')
+    h.table.b2 = 'tab-X'
+    h.store.refreshLeases()
+    expect(h.store.bots[1].rt.otherTab).toBe(false)
+
+    delete h.table.b1 // 租约消失 → 复位
+    h.store.refreshLeases()
+    expect(h.store.bots[0].rt.otherTab).toBe(false)
+
+    h.store.stopBot('b2') // 停跑后 b2 交还给判定路径：他 tab 仍持有 → true
+    h.store.refreshLeases()
+    expect(h.store.bots[1].rt.otherTab).toBe(true)
+  })
+
+  it('refreshLeases 经注入 storage 的真租约语义（陈旧/本 tab 条目不算持有）', () => {
+    let t = 1000000
+    const now = () => t
+    const storage = makeMemStorage()
+    const store = createBotStore({
+      wsUrl: 'ws://test',
+      storage,
+      sessionStorage: makeMemStorage(),
+      rng: () => 0.5,
+      now,
+      deps: { tabId: 'tab-A', createRunner: makeRunnerStub().factory },
+    })
+    store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    store.addBot({ id: 'b1', ...CFG })
+    storage.setItem(LEASE_KEY, JSON.stringify({ b1: { tabId: 'tab-X', ts: now() - 1000 } }))
+    store.refreshLeases()
+    expect(store.bots[0].rt.otherTab).toBe(true)
+
+    t += STALE_MS // 陈旧 → 不再是持有
+    store.refreshLeases()
+    expect(store.bots[0].rt.otherTab).toBe(false)
+
+    storage.setItem(LEASE_KEY, JSON.stringify({ b1: { tabId: 'tab-A', ts: now() } })) // 本 tab 条目绝不算
+    store.refreshLeases()
+    expect(store.bots[0].rt.otherTab).toBe(false)
+    store.dispose()
   })
 })

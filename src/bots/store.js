@@ -239,6 +239,20 @@ export function createBotStore({
       if (r) r.clearBuffer()
     },
 
+    /**
+     * 租约状态重查（审查轮 1 Finding #1）：消费方（Task 9 面板）收到 window 'storage'
+     * 事件（LEASE_KEY）后调本方法——租约结构/新鲜度/tabId 排除只此一份权威判定
+     * （lease.isHeldElsewhere），组件不得复刻解析器。
+     * 语义：非运行态 bot 以 isHeldElsewhere 重设 rt.otherTab；本 tab 运行中的 bot
+     * 跳过——其 otherTab 归 start/stop 生命周期语义管（防 acquire 窗口期竞态误标）。
+     */
+    refreshLeases() {
+      for (const item of store.bots) {
+        if (running.has(item.id)) continue
+        item.rt.otherTab = lease.isHeldElsewhere(item.id)
+      }
+    },
+
     // getBuffer 是权威缓冲入口（裁定 F3）；bot.bufferFrames() 只是委托糖
     getBuffer(id) {
       const r = runners.get(id)

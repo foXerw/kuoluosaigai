@@ -103,15 +103,13 @@
 // BotDeck（Task 9 / spec §8.4）：BOT 控制台覆盖层——providers 配置 + 卡片列表 + 新建表单。
 // 唯一数据入口是 props.store（Task 8 createBotStore 单例）：卡片只 emit，本组件负责接线
 // startBot/stopBot/switchBotRoom/clearBotBuffer/updateBot/removeBot。
-// otherTab 刷新路径：store 未暴露租约重查方法（lease.isHeldElsewhere 是闭包私有）——
-// 组件监听 window 'storage'(LEASE_KEY) 后直读 localStorage 租约表做轻量重查：
-// 本 tab 未运行（非 connecting/open/cooling）且条目新鲜 → 置 rt.otherTab。详见任务报告。
+// otherTab 刷新路径（审查轮 1 Finding #1 收口）：本组件监听 window 'storage'(LEASE_KEY)
+// 只作触发信号，判定全部交给 store.refreshLeases()——组件不复刻租约解析器/tabId 排除/
+// 新鲜度计算，storage 注入差异（T10 传非默认 storage）也不影响刷新。
 import BotCard from './BotCard.vue'
 import { MAX_BOTS, PROVIDER_PRESETS } from '../bots/store'
-import { LEASE_KEY, STALE_MS } from '../bots/lease'
+import { LEASE_KEY } from '../bots/lease'
 import { PUBLIC_ROOM_IDS } from '../theme/channels'
-
-const RUNNING_STATUSES = ['connecting', 'open', 'cooling']
 
 export default {
   name: 'BotDeck',
@@ -148,7 +146,7 @@ export default {
     }
     this._onStorage = (e) => {
       if (e.key !== LEASE_KEY) return
-      this.refreshOtherTab()
+      this.store.refreshLeases()
     }
     window.addEventListener('keydown', this._onKey)
     window.addEventListener('storage', this._onStorage)
@@ -197,22 +195,6 @@ export default {
       this.createError = ''
       this.form.name = ''
       this.form.persona = ''
-    },
-    refreshOtherTab() {
-      let table
-      try {
-        const raw = globalThis.localStorage.getItem(LEASE_KEY)
-        table = raw == null ? {} : JSON.parse(raw)
-      } catch (e) {
-        return // 读不动/坏 JSON：本次刷新放弃（lease 模块对坏 JSON 同样按空表处理）
-      }
-      if (!table || typeof table !== 'object') return
-      const nowMs = Date.now()
-      for (const bot of this.store.bots) {
-        if (RUNNING_STATUSES.includes(bot.rt.status)) continue // 本 tab 在跑，otherTab 归 store 语义管
-        const entry = table[bot.id]
-        bot.rt.otherTab = !!entry && typeof entry.ts === 'number' && nowMs - entry.ts < STALE_MS
-      }
     },
   },
 }

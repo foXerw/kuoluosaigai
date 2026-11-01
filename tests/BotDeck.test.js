@@ -127,6 +127,12 @@ describe('BotDeck', () => {
     window.dispatchEvent(new StorageEvent('storage', { key: LEASE_KEY }))
     await w.vm.$nextTick()
     expect(store.bots[0].rt.otherTab).toBe(false)
+    // 竞态回归（审查轮 1 Finding #1）：本 tab 自己的条目（acquire 窗口期自写）绝不误标
+    localStorage.setItem(LEASE_KEY, JSON.stringify({ [id]: { tabId: 'tab-A', ts: Date.now() } }))
+    window.dispatchEvent(new StorageEvent('storage', { key: LEASE_KEY }))
+    await w.vm.$nextTick()
+    expect(store.bots[0].rt.otherTab).toBe(false)
+    localStorage.setItem(LEASE_KEY, JSON.stringify({}))
     // 无关 key 的事件 → 不动
     localStorage.setItem(LEASE_KEY, JSON.stringify({ [id]: { tabId: 'tab-B', ts: Date.now() } }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'something:else' }))
