@@ -7,7 +7,7 @@ import {
   PROVIDER_PRESETS,
 } from '../src/bots/store'
 import { createIdleScheduler } from '../src/bots/rhythm'
-import { createTabLease, LEASE_KEY, STALE_MS } from '../src/bots/lease'
+import { createTabLease, LEASE_KEY, HEARTBEAT_MS, STALE_MS } from '../src/bots/lease'
 
 // Task 8 / spec §11「botStore」矩阵 + Review Focus 3/5：持久化 roundtrip（B15）、
 // 写失败降级（B17）、MAX_BOTS、租约互斥（B20 端到端）、闲置调度缝合、家族 nick、
@@ -340,6 +340,39 @@ describe('id 计数器对账（终审 #2）', () => {
     expect(store.providers[0].name).toBe('P1')
     expect(store.addBot({ name: '新', roomId: 'r' })).toEqual({ ok: true })
     expect(store.bots[1].id).toBe('bot-1')
+  })
+})
+
+describe('temperature 默认 0.9（终审 M1 / spec §7 钉死）', () => {
+  it('addBot 未指定 temperature → normalizeCfg 默认 0.9（曾误 0.7）；已存显式值不受影响', () => {
+    const store = mkStore(makeMemStorage())
+    expect(store.addBot({ name: 't', roomId: 'r' })).toEqual({ ok: true })
+    expect(store.bots[0].temperature).toBe(0.9)
+
+    const seeded = makeMemStorage({
+      [CONFIG_KEY]: JSON.stringify({
+        version: 1,
+        providers: [],
+        bots: [{ id: 'bot-0', name: 'x', roomId: 'r', temperature: 0.5 }],
+      }),
+    })
+    const store2 = mkStore(seeded)
+    expect(store2.bots[0].temperature).toBe(0.5) // 持久化显式值原样恢复
+    expect(store2.addBot({ name: 'y', roomId: 'r' }).ok).toBe(true)
+    expect(store2.bots[1].temperature).toBe(0.9) // 新建未指定 → 0.9
+  })
+})
+
+describe('心跳 interval 权威常量（终审 M4）', () => {
+  it('store 全局 tick 周期 = lease 导出的 HEARTBEAT_MS（不再巧合借用 RHYTHM_DEFAULTS.idleCheckMs）', async () => {
+    const h = setup()
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    await h.store.startBot('b1')
+    h.advance(HEARTBEAT_MS - 1)
+    expect(h.leaseStub.calls.heartbeat).toHaveLength(0)
+    h.advance(1)
+    expect(h.leaseStub.calls.heartbeat).toEqual(['b1'])
   })
 })
 

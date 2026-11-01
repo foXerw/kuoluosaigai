@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import App from '../src/App.vue'
 import { CHANNELS } from '../src/theme/channels'
+import { CONFIG_KEY } from '../src/bots/store'
 
 describe('App', () => {
   beforeEach(() => sessionStorage.clear())
@@ -135,12 +136,32 @@ describe('App', () => {
   })
 
   it('creates botStore in created and loads persisted config', () => {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({
+      version: 1,
+      providers: [],
+      bots: [{ id: 'b1', name: '小探', roomId: 'setsubun' }],
+    }))
     const wrapper = mount(App, { global: { stubs } })
     expect(wrapper.vm.botStore).toBeTruthy()
     expect(Array.isArray(wrapper.vm.botStore.bots)).toBe(true)
+    expect(wrapper.vm.botStore.bots.map((b) => b.id)).toEqual(['b1']) // 构造尾 loadInto 即完成加载
     expect(wrapper.vm.botStore.load).toBeTypeOf('function')
     expect(wrapper.vm.botDeckOpen).toBe(false)
     wrapper.vm.botStore.dispose()
+    localStorage.removeItem(CONFIG_KEY)
+  })
+
+  it('created 只读盘一次 CONFIG_KEY：构造尾 loadInto 已加载，App 不再重复 store.load()（终审 M3）', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem')
+    let wrapper
+    try {
+      wrapper = mount(App, { global: { stubs } })
+    } finally {
+      const reads = spy.mock.calls.filter((c) => c[0] === CONFIG_KEY).length
+      spy.mockRestore()
+      expect(reads).toBe(1) // 修复前 =2：createBotStore 构造已 loadInto，App.created 的 load() 是死代码重复
+      wrapper.vm.botStore.dispose()
+    }
   })
 
   it('botdeck 事件 → BotDeck 渲染（stub 断言存在即可）；关闭聊天室弹窗不影响 store（botStore 引用不变）', async () => {

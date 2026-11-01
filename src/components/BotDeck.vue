@@ -134,7 +134,7 @@ export default {
         chattiness: 50,
         providerId: null,
         model: '',
-        temperature: 0.7,
+        temperature: 0.9, // spec §7 钉死默认（终审 M1）
         roomId: this.initialRoomId || PUBLIC_ROOM_IDS[0] || '',
       },
       createError: '',

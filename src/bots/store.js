@@ -7,8 +7,8 @@
 //    acquire 是 await——resolve 后复查启动意图与 bot 存续（窗口期 remove/stop/dispose
 //    插队则归还已取得租约并放弃，审查轮 1 #3 防幽灵 runner）；
 //    运行期由全局 15s interval 驱动 lease.heartbeat；stop/fatal-stop 释放租约。
-// 4) 家族闲置调度：每房一个 createIdleScheduler，全局 interval（idleCheckMs=15s）遍历
-//    运行中 bot 按房分组 tick；candidates 是真门禁+真骰子的代理——
+// 4) 家族闲置调度：每房一个 createIdleScheduler，全局 interval（终审 M4：以 lease
+//    导出的 HEARTBEAT_MS=15s 为权威周期，idle 检查搭同一班车）遍历运行中 bot 按房分组 tick；candidates 是真门禁+真骰子的代理——
 //    canInitiateIdle → runner.idleEligible()（transport && rhythm B21 门禁），
 //    rollIdle → runner.idleRoll()（rhythm 权威掷骰，含 chattiness 系数，恰 1 次 rng）；
 //    调度器据此洗牌轮掷、首个通过者中签，winner 以 pokeIdle({preRolled:true}) 直发
@@ -19,8 +19,8 @@
 //    一次（trailing 合并，内存即时更新）。
 // B18：只 import vue/reactive 与 src/bots/{rhythm,lease,runner}；不碰 useChat/roomCache/roomList。
 import { reactive } from 'vue'
-import { RHYTHM_DEFAULTS, createIdleScheduler } from './rhythm'
-import { createTabLease } from './lease'
+import { createIdleScheduler } from './rhythm'
+import { createTabLease, HEARTBEAT_MS } from './lease'
 import { createBotRunner } from './runner'
 
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
@@ -353,7 +353,7 @@ export function createBotStore({
       chattiness: Number.isFinite(chattiness) ? chattiness : 50,
       providerId: c.providerId ?? null,
       model: String(c.model ?? ''),
-      temperature: Number.isFinite(temperature) ? temperature : 0.7,
+      temperature: Number.isFinite(temperature) ? temperature : 0.9, // spec §7 钉死默认（终审 M1，曾误 0.7）
       rawPrompt: String(c.rawPrompt ?? ''),
       roomId: typeof c.roomId === 'string' ? c.roomId : '',
       nick: typeof c.nick === 'string' && c.nick ? c.nick : null,
@@ -634,7 +634,9 @@ export function createBotStore({
 
   function ensureTick() {
     if (disposed || tickTimer) return
-    tickTimer = setInterval(onGlobalTick, RHYTHM_DEFAULTS.idleCheckMs)
+    // 终审 M4：全局 tick 以租约心跳周期为权威常量（lease 导出 HEARTBEAT_MS），
+    // 不再借用 RHYTHM_DEFAULTS.idleCheckMs——两个 15000 曾是巧合同值
+    tickTimer = setInterval(onGlobalTick, HEARTBEAT_MS)
   }
 
   function maybeStopTick() {

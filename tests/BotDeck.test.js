@@ -140,6 +140,11 @@ describe('BotDeck', () => {
     expect(store.bots[0].rt.otherTab).toBe(false)
   })
 
+  it('新建表单 temperature 默认 0.9（终审 M1 / spec §7）', () => {
+    const { w } = setup()
+    expect(w.vm.form.temperature).toBe(0.9)
+  })
+
   it('打开面板即查租约（终审 #8）：挂载时 refreshLeases，无需 storage 事件即可复位过期 otherTab', async () => {
     const { store, w } = setup()
     store.addBot({ name: 'A', roomId: 'setsubun' })
@@ -164,6 +169,7 @@ describe('BotDeck', () => {
     store.addBot({ name: 'A', roomId: 'setsubun', providerId: p2.id })
     await w.vm.$nextTick()
     expect(w.findAll('.deck__prov-del')).toHaveLength(2)
+    expect(store.providers.map((x) => x.id)).toEqual([p1.id, p2.id]) // 行序 = 渲染序
 
     await w.findAll('.deck__prov-del')[0].trigger('click') // P1 未被引用 → 删
     expect(store.providers.map((x) => x.id)).toEqual([p2.id])

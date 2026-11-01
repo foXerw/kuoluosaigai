@@ -114,8 +114,9 @@ export default {
     this.channel = pickChannel()
     // botStore：App 层单例（实例字段，不进 data——store 本体已是 reactive，
     // 再包一层无益且防 Vue 深侦 runner 句柄）。构造不建连，只有 startBot 才连 WS。
+    // 持久配置加载在 createBotStore 构造尾 loadInto() 完成——此处不再重复 store.load()
+    //（终审 M3：删冗余读盘；load() 仍为公开 API 供他处需要重载时用）
     this.botStore = createBotStore({ wsUrl: this.wsUrl })
-    this.botStore.load()
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeunload', this.onUnload)
     }
