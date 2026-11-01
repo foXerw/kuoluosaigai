@@ -27,9 +27,11 @@
           <button class="deck__prov-add" type="button" @click="submitProvider">+ ADD</button>
         </form>
         <p class="deck__note">&gt; token 只存本机浏览器，页面代码直连 AI 服务商（model 在各 bot 上选）。</p>
+        <p v-if="provError" class="deck__errline">&gt; {{ provError }}</p>
         <ul class="deck__plist">
           <li v-for="p in store.providers" :key="p.id" class="deck__prov">
             ▸ {{ p.name }} · {{ p.baseUrl }} · key {{ p.apiKey ? '●●● 已设' : '未设' }}
+            <button class="deck__prov-del" type="button" aria-label="删除该 provider" @click="removeProvider(p.id)">✕</button>
           </li>
           <li v-if="!store.providers.length" class="deck__empty">&gt; 还没有 provider——上面选个预设加一个。</li>
         </ul>
@@ -102,10 +104,11 @@
 <script>
 // BotDeck（Task 9 / spec §8.4）：BOT 控制台覆盖层——providers 配置 + 卡片列表 + 新建表单。
 // 唯一数据入口是 props.store（Task 8 createBotStore 单例）：卡片只 emit，本组件负责接线
-// startBot/stopBot/switchBotRoom/clearBotBuffer/updateBot/removeBot。
-// otherTab 刷新路径（审查轮 1 Finding #1 收口）：本组件监听 window 'storage'(LEASE_KEY)
-// 只作触发信号，判定全部交给 store.refreshLeases()——组件不复刻租约解析器/tabId 排除/
-// 新鲜度计算，storage 注入差异（T10 传非默认 storage）也不影响刷新。
+// startBot/stopBot/switchBotRoom/clearBotBuffer/updateBot/removeBot/removeProvider。
+// otherTab 刷新路径（审查轮 1 Finding #1 收口 + 终审 #8）：spec §7 明文「打开时 +
+// storage 事件时检查」——mounted 即 store.refreshLeases()（他 tab 状态在面板关着时
+// 错过的 storage 事件靠打开补齐），window 'storage'(LEASE_KEY) 只作触发信号；判定
+// 全部交给 store.refreshLeases()——组件不复刻租约解析器/tabId 排除/新鲜度计算。
 import BotCard from './BotCard.vue'
 import { MAX_BOTS, PROVIDER_PRESETS } from '../bots/store'
 import { LEASE_KEY } from '../bots/lease'
@@ -135,6 +138,7 @@ export default {
         roomId: this.initialRoomId || PUBLIC_ROOM_IDS[0] || '',
       },
       createError: '',
+      provError: '', // 终审 #9：provider 删除被拒时的行内提示
     }
   },
   computed: {
@@ -143,6 +147,9 @@ export default {
     },
   },
   mounted() {
+    // 终审 #8：spec §7「打开时 + storage 事件时检查」——面板关着时错过他 tab 的
+    // storage 事件（如他 tab 已停），挂载即重查一次，过期 otherTab 不会永挂禁启动钮
+    this.store.refreshLeases()
     this._onKey = (e) => {
       if (e.key === 'Escape') this.$emit('close')
     }
@@ -168,6 +175,16 @@ export default {
       if (!name || !baseUrl) return // 名称/baseUrl 缺一不提交
       this.store.addProvider({ name, baseUrl, apiKey: this.prov.apiKey })
       this.prov = { name: '', baseUrl: '', apiKey: '' } // key 输入即清（不回显残留）
+    },
+    // 终审 #9：provider 删除入口——store.removeProvider 无引用守卫（历史语义保持），
+    // 拦截放 UI 层：被 bot 引用时拒删并提示，防止 bot 静默悬空 providerId
+    removeProvider(id) {
+      if (this.store.bots.some((b) => b.providerId === id)) {
+        this.provError = '该 provider 正被 bot 引用——请先调整 bot 的 Provider 或删除对应 bot'
+        return
+      }
+      this.provError = ''
+      this.store.removeProvider(id)
     },
     submitBot() {
       if (this.atMax) return
@@ -346,6 +363,19 @@ export default {
 .deck__prov {
   padding: 2px 0;
   word-break: break-word;
+}
+.deck__prov-del {
+  background: none;
+  border: 1px solid #1f2a1f;
+  color: var(--app-color, #39ff14);
+  font-family: var(--app-mono);
+  cursor: pointer;
+  padding: 0 6px;
+  margin-left: 6px;
+}
+.deck__prov-del:hover {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
 }
 .deck__empty {
   margin: 4px 0;

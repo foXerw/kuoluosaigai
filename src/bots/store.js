@@ -13,7 +13,8 @@
 //    rollIdle → runner.idleRoll()（rhythm 权威掷骰，含 chattiness 系数，恰 1 次 rng）；
 //    调度器据此洗牌轮掷、首个通过者中签，winner 以 pokeIdle({preRolled:true}) 直发
 //    （不再二次掷，防概率平方化）；全员未过 → 调度器按 afterChat 短窗重开（审查轮 1 #1）。
-//    房内无运行 bot → 该房调度器回收。runner onEvent('activity') → 对应房 notifyActivity。
+//    房内无运行 bot → 该房调度器回收。runner onEvent('activity') → 对应房
+//    notifyActivity(payload.family===true 透传，终审 #7：家族消息不腰斩 idle 长窗)。
 // 5) 用量累计：onState.session 绝对值与基线差分增量写 lifetime；持久化节流至多每 10s
 //    一次（trailing 合并，内存即时更新）。
 // B18：只 import vue/reactive 与 src/bots/{rhythm,lease,runner}；不碰 useChat/roomCache/roomList。
@@ -543,8 +544,10 @@ export function createBotStore({
 
   function handleEvent(id, type, payload) {
     if (type === 'activity') {
+      // 终审 #7：转发 runner 的 family 标志——家族活动走调度器 max 语义保 idle 长窗，
+      // 真人活动完全重置
       const room = payload && payload.roomId
-      if (room && running.has(id)) ensureScheduler(room).notifyActivity()
+      if (room && running.has(id)) ensureScheduler(room).notifyActivity(payload.family === true)
     } else if (type === 'nick') {
       const item = findBot(id)
       if (item && payload && payload.nick) {

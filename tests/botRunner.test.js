@@ -153,7 +153,7 @@ describe('createBotRunner', () => {
 
     s.emit(msgFrame({ id: 'p1', ts: 50 }))
     expect(ctx.runner.getBuffer().map((f) => f.id)).toEqual(['p1'])
-    expect(ctx.events[0]).toEqual({ t: 'activity', payload: { roomId: 'roomA' } })
+    expect(ctx.events[0]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: false } })
     expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000])
 
     ctx.resolveSleep()
@@ -181,6 +181,8 @@ describe('createBotRunner', () => {
     const last = ctx.patches[ctx.patches.length - 1]
     expect(last.session).toEqual({ promptTokens: 11, completionTokens: 7, messages: 1 })
     expect(last.hourCount).toBe(1)
+    // 自家发送成功的 activity 上报 = 家族消息（终审 #7：调度器据此走 max 语义）
+    expect(ctx.events[1]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: true } })
   })
 
   it('总延迟封顶：think 8000 + typing 12000 → 第二段只睡 7000；超长回复截 280', async () => {
@@ -428,7 +430,7 @@ describe('createBotRunner', () => {
       })
     })
     const ctx = makeRunner({
-      rng: mkRng([0.5, 0, 0.5, 0, 0.5, 0, 0.5, 0.5, 0.5, 0.5, 0.5]), // streak; f1 p+t; f2 p+t; f3 p+t（decide 命中即掷，槽占后整 job 丢弃）; f1 typing+afk; f2 typing+afk
+      rng: mkRng([0.5, 0, 0.5, 0, 0.5, 0, 0.5, 0.5, 0.5]), // streak; f1 p+t; f2 p+t; f3 p+t（decide 命中即掷，槽占后整 job 丢弃）; f1 typing+afk
       fetchImpl,
     })
     const s = land(ctx)
@@ -444,22 +446,50 @@ describe('createBotRunner', () => {
     await flush()
     expect(ctx.sleepQ.map((x) => x.ms)).toEqual([1500]) // f1 typing（'回复一'3字→1段×1500）
     ctx.resolveSleep()
-    await flush() // f1 发出 → pending 的 f2 启动，think 5000 入队
-    expect(fetchImpl).toHaveBeenCalledTimes(1) // f2 还在 think，未进 fetch
-    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000])
+    await flush() // f1 发出 → finally
+    // 终审 #5 改判：距上条发送 <minGapMs（测试时钟未推进恒 0s，且真实时序 think+LLM 也才
+    // 3~5s）→ pending f2 直接丢弃，不再串行起跑——「下一条须重新掷骰重新计时」正是
+    // spec §7 防排队轰炸的口径。串行消费在无发送链上的保留由下一条测试钉住。
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(ctx.sleepQ).toHaveLength(0)
     expect(maxActive).toBe(1)
+    const sent = framesOf(s).filter((f) => f.type === 'message')
+    expect(sent.map((f) => f.text)).toEqual(['回复一']) // f2/f3 均无第二次请求
+  })
 
+  it('B10 串行消费保留在「本轮未发出」链上：pending 仅在间隔条件满足时起跑（终审 #5 边界）', async () => {
+    // f1 空回复不发送（lastSentAt 保持 null）→ finally 照常消费 pending f2，
+    // 且串行性不破：f2 的 fetch 开始时 f1 已完结，在途仍 ≤1
+    let active = 0
+    let maxActive = 0
+    let calls = 0
+    const fetchImpl = vi.fn(async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      calls += 1
+      const r = calls === 1 ? llmOk('') : llmOk('补上') // 按调用次序（active 恒 1 因串行）
+      await flush(2)
+      active--
+      return r
+    })
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0, 0.5, 0.5, 0.5]), // streak; f1 p+t（空回复不掷 typing/afk）; f2 p+t; f2 typing; f2 afk-miss
+      fetchImpl,
+    })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'f1' }))
+    s.emit(msgFrame({ id: 'f2' })) // → pending
+    ctx.resolveSleep() // f1 think → fetch（空回复 → return）
+    await flush()
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000]) // f2 起跑（lastSentAt=null 不受间隔门拦截）
+    ctx.resolveSleep() // f2 think → fetch
+    await flush()
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([1500]) // f2 typing（'补上'2字→1段×1500）
     ctx.resolveSleep()
     await flush()
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-    expect(maxActive).toBe(1) // f2 的 fetch 开始时 f1 已完成 → 并发仍为 1
-    fds[1].resolve(llmOk('回复二'))
-    await flush()
-    ctx.resolveSleep() // f2 typing
-    await flush()
     const sent = framesOf(s).filter((f) => f.type === 'message')
-    expect(sent.map((f) => f.text)).toEqual(['回复一', '回复二'])
-    expect(fetchImpl).toHaveBeenCalledTimes(2) // f3 被丢弃：永远没有第三次请求
+    expect(sent.map((f) => f.text)).toEqual(['补上'])
+    expect(maxActive).toBe(1) // 串行：f2 fetch 时 f1 已完结
   })
 
   it('B11: WS 断开 → 退避重连 rejoin，runner 状态回 open，hourCount 保留、冷却显示重置', async () => {
@@ -540,6 +570,105 @@ describe('createBotRunner', () => {
     await flush()
     expect(ctx.fetchImpl).not.toHaveBeenCalled()
     expect(() => ctx.runner.stop('再来一次')).not.toThrow()
+  })
+
+  it('陌生 BOT· badge 帧走 bot 档 0.2 而非真人 0.4（终审 #4）', async () => {
+    // chattiness 50 → factor 1.0：human 档阈值 0.4、bot 档 0.2。概率掷 0.3 恰夹在两档之间：
+    // 误按真人 0.4 判会命中进管道，正确的 bot 档直接拒绝
+    const ctx = makeRunner({ rng: mkRng([0.5, 0.3]) }) // 构造 streakLimit；prob
+    const s = land(ctx)
+    s.emit(msgFrame({ badge: 'BOT·Evil', nick: 'ANON-EVIL' }))
+    expect(ctx.sleepQ).toHaveLength(0) // 不掷 think（rng 序列只剩 0 个值，误命中会耗尽抛错）
+    expect(ctx.fetchImpl).not.toHaveBeenCalled()
+
+    // 对照组：同 rng 值无 badge（真人帧）在 0.4 档照常命中
+    const b = makeRunner({ rng: mkRng([0.5, 0.3, 0.5]) }) // 构造; prob 命中; think=5000
+    const sb = land(b)
+    sb.emit(msgFrame({ badge: '' }))
+    expect(b.sleepQ.map((x) => x.ms)).toEqual([5000])
+  })
+
+  it('家族 streak 预算计数保持 nick-only：BOT· badge 帧不推对话预算（终审 #4 信任模型）', async () => {
+    // 构造 0 → streakLimit=6。6 条陌生 BOT·badge 帧 + 1 条真家族帧全部 prob 0.9 拒绝
+    // （每帧恰 1 掷，共 7 掷无余量）。若 badge 被误算进 familyStreak，第 7 帧
+    // trailing streak 会达 6 → 触发冷却多掷 2 骰 → rng 耗尽抛错且 idleEligible 翻 false
+    const ctx = makeRunner({
+      familyNicks: ['ANON-F'],
+      rng: mkRng([0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]),
+    })
+    const s = land(ctx)
+    for (let i = 0; i < 6; i++) s.emit(msgFrame({ id: `x${i}`, nick: 'ANON-X', badge: 'BOT·Fake' }))
+    s.emit(msgFrame({ id: 'fam', nick: 'ANON-F', badge: '' }))
+    expect(ctx.fetchImpl).not.toHaveBeenCalled()
+    expect(ctx.runner.idleEligible()).toBe(true) // 未触发 streak 冷却
+  })
+
+  it('最小间隔约束实际发送时刻：风暴下排队 job 距上条发送 <8s 直接丢弃（终审 #5）', async () => {
+    // f1/f2 密集风暴：f2 的 decide 早于 f1 发送、通过了 rhythm 侧间隔门；f1 发送完成的
+    // 同一时刻 now-lastSentAt=0 < 8000 → 排队 job 丢弃。修复前 finally 立即消费 f2，
+    // 实际两条发送仅隔 think+LLM（3~5s 真实时序），spec §7 防排队轰炸失守
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0, 0.5, 0.5, 0.5]), // 构造; f1 prob/think; f2 prob/think（decide 均在发送前）; f1 typing/afk（job 被丢后不得再有掷骰）
+    })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'f1' })) // decide 命中 → think 5000 起跑
+    s.emit(msgFrame({ id: 'f2' })) // → pending 槽
+    ctx.resolveSleep() // f1 think
+    await flush() // f1 fetch 完成
+    ctx.resolveSleep() // f1 typing
+    await flush() // f1 发送 → finally
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1) // f2 不再起跑（修复前：第 2 次 fetch）
+    expect(ctx.sleepQ).toHaveLength(0)
+    const sent = framesOf(s).filter((f) => f.type === 'message')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('finally 间隔门只拦「本 bot 刚发过」：未发送的 job 照常消费 pending（终审 #5 防过丢弃）', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0, 0.5]), // 构造; f1 prob/think（空回复不发送，不掷 typing/afk）; f2 prob/think
+      fetchImpl: vi.fn(async () => llmOk('')),
+    })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'f1' }))
+    s.emit(msgFrame({ id: 'f2' }))
+    ctx.resolveSleep() // f1 think → fetch → 空回复 return
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000]) // lastSentAt=null → f2 照常消费起跑
+  })
+
+  it('发送管道异常兜底：socket.send 抛错 job 静默失败、无 unhandled rejection、bot 继续运行（终审 #6）', async () => {
+    const ctx = makeRunner({ rng: mkRng([0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 0.5]) })
+    const s = land(ctx)
+    s.send = () => { throw new Error('InvalidStateError: WebSocket is already in CLOSING state') }
+    s.emit(msgFrame({ id: 'f1' }))
+    ctx.resolveSleep() // think → fetch
+    await flush()
+    ctx.resolveSleep() // typing 完成 → connection.send 抛错
+    await flush()
+    // 修复前：sendFrame 的抛错冒出 runJob → `void runJob(...)` 无 catch → vitest 记
+    // unhandled rejection 挂本文件；runner 本体也失守
+    expect(ctx.runner.getState().status).toBe('open')
+
+    s.send = (d) => { s.sent.push(d) } // 恢复发送：管道完好，f1 未发出 → 无 minGap/小时计推进
+    s.emit(msgFrame({ id: 'f2' }))
+    ctx.resolveSleep()
+    await flush()
+    ctx.resolveSleep()
+    await flush()
+    const sent = framesOf(s).filter((f) => f.type === 'message')
+    expect(sent.map((f) => f.text)).toEqual(['你好呀，朋友'])
+    expect(ctx.patches[ctx.patches.length - 1].session.messages).toBe(1)
+  })
+
+  it('activity 事件携带 family 标志：家族 nick 消息与自家发送=true，陌生=false（终审 #7 接线）', async () => {
+    const ctx = makeRunner({ familyNicks: ['ANON-F'], rng: mkRng([0.5, 0.9, 0.9]) }) // 构造; 两帧 prob 均拒
+    const s = land(ctx)
+    ctx.events.length = 0
+    s.emit(msgFrame({ nick: 'ANON-F' }))
+    expect(ctx.events[0]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: true } })
+    s.emit(msgFrame({ id: 'x', nick: 'ANON-O' }))
+    expect(ctx.events[1]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: false } })
   })
 })
 

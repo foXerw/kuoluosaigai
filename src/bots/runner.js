@@ -107,6 +107,7 @@ export function createBotRunner({
 
   let speaking = false
   let pendingJob = null
+  let lastSentAt = null // 终审 #5：上一条实际发送时刻——minGap 约束的是发送时刻而非命中时刻
   let roomEpoch = 0 // 切房/stop 递增：在途 runJob 回来发现 epoch 变了即作废（B7）
   let synthSeq = 0
 
@@ -210,12 +211,16 @@ export function createBotRunner({
     buffer.push(frame)
     rev += 1
     patch({ rev })
-    onEvent?.('activity', { roomId: frame.roomId })
+    // 终审 #7 接线：family 标志 = 自己观察到的家族成员消息（自家发送在 runJob 上报）
+    onEvent?.('activity', { roomId: frame.roomId, family: fam.has(frame.nick) })
 
     const decision = rhythm.decide({
       mentions,
       isOwner: !!owner && frame.nick === owner,
-      isFamily: fam.has(frame.nick),
+      // 终审 #4（spec §7「其他 bot ~20%」）：概率档认公开 badge——陌生 BOT· 发送者
+      // 不该拿 40% 真人档。familyStreak 预算计数保持 nick-only：badge 可伪造，
+      // 只降概率档不放行冷却预算，伪造者被更少理睬，符合信任模型。
+      isFamily: fam.has(frame.nick) || String(frame.badge || '').startsWith('BOT·'),
       familyStreak: trailingFamilyStreak(buffer.all(), fam),
     })
     if (decision) kick({ idle: false, thinkMs: decision.thinkMs, frame })
@@ -227,7 +232,7 @@ export function createBotRunner({
       if (pendingJob === null) pendingJob = job // 槽已占：新命中直接丢弃，不排多条
       return
     }
-    void runJob(job)
+    void runJob(job).catch(() => {}) // 终审 #6：管道异常兜底，不产 unhandled rejection
   }
 
   async function runJob(job) {
@@ -270,6 +275,7 @@ export function createBotRunner({
       if (!connection.send({ type: 'message', text, badge })) return // 非 open 静默放弃
 
       // —— 发送成功记账 ——
+      lastSentAt = now() // 终审 #5：排队轰炸防御的锚点
       synthSeq += 1
       buffer.push({
         type: 'message',
@@ -294,12 +300,17 @@ export function createBotRunner({
       hourCount = rhythm.status().hourCount
       patch({ rev, session: { ...session }, hourCount })
       pushStatus()
-      onEvent?.('activity', { roomId: connection.currentRoomId }) // 自家消息同样重置闲置窗口
+      // 自家消息 = 家族活动（终审 #7）：调度器对家族消息走 max 语义，不腰斩 idle 长窗
+      onEvent?.('activity', { roomId: connection.currentRoomId, family: true })
     } finally {
       speaking = false
       const next = pendingJob
       pendingJob = null
-      if (next && started) void runJob(next) // 串行消费 pending；停机后丢弃
+      // 终审 #5：spec §7 最小间隔约束实际发送时刻——距上条发送 < minGapMs 时
+      // 直接丢弃排队 job（风暴场景下 think+LLM 只要 3~5s，立即消费会击穿 8s 底线）
+      if (next && started && (lastSentAt === null || now() - lastSentAt >= RHYTHM_DEFAULTS.minGapMs)) {
+        void runJob(next).catch(() => {}) // 串行消费 pending；停机/间隔未足后丢弃。终审 #6 兜底异常
+      }
     }
   }
 

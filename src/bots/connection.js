@@ -57,8 +57,14 @@ export function createBotConnection({
 
   function sendFrame(frame) {
     if (status !== 'open' || !ws) return false
-    ws.send(JSON.stringify(frame))
-    return true
+    // 终审 #6：status 镜像与真实 readyState 有窗口（已 CLOSING 但 onclose 未派发），
+    // 此时 ws.send 抛 InvalidStateError——薄传输层兜底为 false，绝不让异常冒泡炸调用方
+    try {
+      ws.send(JSON.stringify(frame))
+      return true
+    } catch {
+      return false
+    }
   }
 
   function join(roomId) {

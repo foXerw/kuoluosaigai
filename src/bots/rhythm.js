@@ -234,7 +234,7 @@ export function createRhythm({
  * @param {{ rng?: () => number, now?: () => number, params?: object }} [options]
  *   注意：构造即消耗 1 次 rng（首个 afterChat 窗口）。
  * @returns {{
- *   notifyActivity: () => void,
+ *   notifyActivity: (isFamily?: boolean) => void,
  *   tick: (candidates: Array<{ id: string, canInitiateIdle: () => boolean, rollIdle: () => boolean }>)
  *     => string | null,
  * }}
@@ -250,9 +250,15 @@ export function createIdleScheduler({
   let windowUntil = rollWindow('idleWindowAfterChatMs')
 
   return {
-    /** 房内任何消息（含自家 bot 的）→ 重新武装 afterChat 窗口（消耗 1 次 rng）。 */
-    notifyActivity() {
-      windowUntil = rollWindow('idleWindowAfterChatMs')
+    /**
+     * 房内活动 → 重掷 afterChat 窗口（恒消耗 1 次 rng）。终审 #7（spec §7
+     * 「发起后放宽 8~15min 控 token 下限」）：isFamily=true（自家 bot 发送/观察到的
+     * 家族成员消息）取 max——不缩短已武装窗口，idle 发起后的长窗不再被自家消息秒腰斩；
+     * 其余（真人）活动完全重置（既往行为）。
+     */
+    notifyActivity(isFamily = false) {
+      const rolled = rollWindow('idleWindowAfterChatMs')
+      windowUntil = isFamily ? Math.max(windowUntil, rolled) : rolled
     },
 
     /**

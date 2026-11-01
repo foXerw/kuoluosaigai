@@ -406,6 +406,33 @@ describe('createIdleScheduler', () => {
     expect(rng.count()).toBe(5)
   })
 
+  it('notifyActivity(isFamily=true) 不缩短已武装窗口；isFamily=false 完全重置（终审 #7）', () => {
+    // spec §7「发起后放宽 8~15min 控 token 下限」此前被自家消息秒腰斩——死条款。
+    // 窗1=180000；winner → afterIdle 窗 2=180000+480000=660000；
+    // 家族 notify 掷出 300000+between(afterChat,0)=480000 < 660000 → max 保留长窗。
+    // 修复前 notifyActivity 无视参数直接重置 → 长窗被腰斩，t=500000 提前开火
+    const clock = fakeClock()
+    const rng = seqRng([0, 0, 0, 0, 0])
+    const s = createIdleScheduler({ rng, now: clock.now })
+    const w = cand('w', true, true)
+    clock.set(180000)
+    expect(s.tick([w])).toBe('w')
+
+    clock.set(300000)
+    s.notifyActivity(true)
+    clock.set(500000)
+    const q = cand('q', true, true)
+    expect(s.tick([q])).toBe(null) // 长窗存活：不到点、不问候选、不掷骰
+    expect(q.canCount).toBe(0)
+
+    s.notifyActivity(false) // 真人消息 → 依旧完全重置：500000+180000=680000
+    clock.set(679999)
+    expect(s.tick([q])).toBe(null)
+    clock.set(680000)
+    expect(s.tick([q])).toBe('q') // 重置生效：到点开火 → afterIdle 再掷窗
+    expect(rng.count()).toBe(5)
+  })
+
   it('任一 notifyActivity 重置窗口（从当前时刻重新掷 afterChat 窗）', () => {
     const clock = fakeClock()
     // 窗1=180000；t=90000 重置 → 90000+330000=420000；洗牌 0.6；全败 → 掷窗值 0

@@ -301,6 +301,19 @@ describe('createBotConnection', () => {
     expect(statuses).toEqual(['connecting', 'open', 'closed', 'connecting', 'open', 'closed'])
   })
 
+  it('ws.send 抛错（status=open 但 socket 已 CLOSING 的窗口，InvalidStateError）→ send 返回 false 不抛（终审 #6）', async () => {
+    vi.useFakeTimers()
+    const { conn } = makeConn()
+    conn.connect('roomA')
+    await vi.advanceTimersByTimeAsync(0)
+    const s = lastSocket()
+    // 真实浏览器：readyState 变 CLOSING 与 status 镜像之间存在窗口，send 会抛 DOMException
+    s.send = () => { throw new Error('InvalidStateError: WebSocket is already in CLOSING state') }
+    expect(() => conn.send({ type: 'message', text: 'x' })).not.toThrow()
+    expect(conn.send({ type: 'message', text: 'x' })).toBe(false)
+    conn.close()
+  })
+
   it('onFrame 透传 joined/assign/message/rate/join-error 原帧不做加工', async () => {
     vi.useFakeTimers()
     const { conn, frames } = makeConn()

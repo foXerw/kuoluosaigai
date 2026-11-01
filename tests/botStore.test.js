@@ -547,7 +547,8 @@ describe('闲置调度', () => {
       })
       const rec = {
         ticks: [], notifies: 0,
-        notifyActivity() { rec.notifies += 1; real.notifyActivity() },
+        // 终审 #7：store 转发 runner 上报的 family 标志，包装器必须透传参数
+        notifyActivity(isFamily) { rec.notifies += 1; real.notifyActivity(isFamily) },
         tick(cands) { rec.ticks.push(cands.map((c) => c.id)); return real.tick(cands) },
       }
       made.push(rec)
@@ -594,6 +595,43 @@ describe('闲置调度', () => {
     expect(r2.pokes).toBe(0)
     h.advance(15000) // t=105000 ≥ 100000 → 新房 winner
     expect(r2.pokes).toBe(1)
+  })
+
+  it('闲置长窗家族语义（终审 #7）：idle 发起后家族 activity 不腰斩长窗，非家族消息仍完全重置', async () => {
+    const made = []
+    const createScheduler = (opts) => {
+      const real = createIdleScheduler({
+        ...opts,
+        params: { idleWindowAfterChatMs: [10000, 10000], idleWindowAfterIdleMs: [400000, 400000] },
+      })
+      const rec = {
+        notifies: [],
+        notifyActivity(isFamily) { rec.notifies.push(familyToBool(isFamily)); real.notifyActivity(isFamily) },
+        tick(cands) { return real.tick(cands) },
+      }
+      made.push(rec)
+      return rec
+    }
+    const familyToBool = (v) => (v === true ? 'family' : 'other') // 记录 store 转发的标志
+    const h = setup({ createScheduler })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    await h.store.startBot('b1') // t=0：短窗 10000
+    const r1 = h.runnerStub.byBot.get('b1')
+    r1.opts.onState({ rev: 1, status: 'open', nick: 'ANON-1' })
+
+    h.advance(15000) // tick1 → winner → poke + afterIdle 长窗 15000+400000=415000
+    expect(r1.pokes).toBe(1)
+
+    r1.opts.onEvent('activity', { roomId: 'room-a', family: true }) // 家族消息：max 保长窗
+    expect(made[0].notifies).toEqual(['family']) // family 标志经 store 透传给调度器
+    h.advance(30000) // t=45000 < 415000 → 不长不短都不开火（修复前：25000 已被腰斩开火）
+    expect(r1.pokes).toBe(1)
+
+    r1.opts.onEvent('activity', { roomId: 'room-a', family: false }) // 真人 → 完全重置 45000+10000=55000
+    expect(made[0].notifies).toEqual(['family', 'other'])
+    h.advance(15000) // t=60000 ≥ 55000 → tick → poke 2
+    expect(r1.pokes).toBe(2)
   })
 
   it('真骰子透传（审查轮 1 #1）：rollIdle 未中 → 全员未过短窗重开（不误记成功进长窗）；冷却 bot 不作 winner 且被短路不掷', async () => {

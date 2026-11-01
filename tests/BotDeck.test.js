@@ -140,6 +140,46 @@ describe('BotDeck', () => {
     expect(store.bots[0].rt.otherTab).toBe(false)
   })
 
+  it('打开面板即查租约（终审 #8）：挂载时 refreshLeases，无需 storage 事件即可复位过期 otherTab', async () => {
+    const { store, w } = setup()
+    store.addBot({ name: 'A', roomId: 'setsubun' })
+    await w.vm.$nextTick()
+    const id = store.bots[0].id
+    localStorage.setItem(LEASE_KEY, JSON.stringify({ [id]: { tabId: 'tab-B', ts: Date.now() } }))
+    w.unmount() // 面板关着时他 tab 写入——本 tab 错过 storage 事件
+
+    const w2 = mount(BotDeck, { props: { store } }) // 重新打开
+    expect(store.bots[0].rt.otherTab).toBe(true) // 修复前：挂载不查，永挂 false → 双开烧 token
+    localStorage.setItem(LEASE_KEY, JSON.stringify({})) // 他 tab 已停、条目消失
+    w2.unmount()
+    const w3 = mount(BotDeck, { props: { store } })
+    expect(store.bots[0].rt.otherTab).toBe(false) // 打开同样复位（启动钮解禁）
+    w3.unmount()
+  })
+
+  it('provider 行尾 ✕：未被引用 → removeProvider 删除；被 bot 引用 → 拒删并提示（终审 #9）', async () => {
+    const { store, w } = setup()
+    const p1 = store.addProvider({ name: 'P1', baseUrl: 'https://x1.test', apiKey: 'k' }).provider
+    const p2 = store.addProvider({ name: 'P2', baseUrl: 'https://x2.test', apiKey: 'k' }).provider
+    store.addBot({ name: 'A', roomId: 'setsubun', providerId: p2.id })
+    await w.vm.$nextTick()
+    expect(w.findAll('.deck__prov-del')).toHaveLength(2)
+
+    await w.findAll('.deck__prov-del')[0].trigger('click') // P1 未被引用 → 删
+    expect(store.providers.map((x) => x.id)).toEqual([p2.id])
+    expect(store.bots[0].providerId).toBe(p2.id)
+
+    await w.findAll('.deck__prov-del')[0].trigger('click') // P2 被 bot 引用 → 拒删 + 提示
+    expect(store.providers).toHaveLength(1)
+    expect(w.text()).toContain('被 bot 引用')
+
+    store.removeBot(store.bots[0].id) // 引用解除后可删，提示同步消失
+    await w.vm.$nextTick()
+    await w.findAll('.deck__prov-del')[0].trigger('click')
+    expect(store.providers).toHaveLength(0)
+    expect(w.text()).not.toContain('被 bot 引用')
+  })
+
   it('Esc/关闭按钮 → emit close；unmount 后监听器移除', async () => {
     const runnerStub = makeRunnerStub()
     const store = createBotStore({
