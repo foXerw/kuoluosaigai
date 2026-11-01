@@ -35,11 +35,14 @@ MockSocket.instances = []
 // StubSocket：不自动 open 的 ws 替身，供「连续失败未到 open」的退避档位链使用——
 // MockSocket 的 0ms open 会在任何时间推进中触发、把计数器归零，无法演 1000→2000→5000 连败。
 // fail(code) 模拟代理/防火墙式异常断开（带 close code、非用户 close()）。
+// close() 刻意模拟真实 WebSocket 语义：只记 closedRequested，**不**同步派发 onclose——
+// 关闭事件由测试稍后手动 fail()/触发，用以复现「迟到 close 事件」的 stale-socket 竞态。
 class StubSocket {
   constructor(url) {
     this.url = url
     this.readyState = 0
     this.sent = []
+    this.closedRequested = false
     this.onopen = null
     this.onmessage = null
     this.onclose = null
@@ -58,7 +61,11 @@ class StubSocket {
     if (this.onclose) this.onclose({ code })
   }
   close() {
-    this.fail(1000)
+    this.closedRequested = true
+  }
+  // 模拟在途/迟到的入站帧（真实 WS 上 close 前已到达的 message 事件）
+  emit(frame) {
+    if (this.onmessage) this.onmessage({ data: JSON.stringify(frame) })
   }
 }
 StubSocket.instances = []
@@ -249,6 +256,49 @@ describe('createBotConnection', () => {
     c2.conn.close()
     await vi.advanceTimersByTimeAsync(60000)
     expect(MockSocket.instances).toHaveLength(m)
+  })
+
+  it('stale-socket 竞态：close() 后旧 socket 迟到的 open/close/message 事件不得伤害新连接（审查轮 1）', () => {
+    const sch = makeScheduler()
+    const { conn, frames, statuses } = makeConn({ WebSocketImpl: StubSocket, ...sch })
+    conn.connect('roomA')
+    const s1 = StubSocket.instances[0]
+    s1.open()
+    expect(framesOf(s1)).toEqual([{ type: 'join', roomId: 'roomA' }])
+
+    // 用户 close()：真实 WS 语义下 close 事件迟到（StubSocket.close 不同步派发）
+    conn.close()
+    expect(s1.closedRequested).toBe(true)
+    expect(statuses).toEqual(['connecting', 'open', 'closed'])
+
+    // ① 旧 socket 迟到的 onopen：不得把已关闭连接翻回 open、不得补发 join
+    s1.open()
+    // ② 立即重连 → s2（connecting）
+    conn.connect('roomA')
+    const s2 = StubSocket.instances[1]
+    expect(StubSocket.instances).toHaveLength(2)
+    // ③ 旧 socket 迟到的 onclose：不得清掉 s2 引用、不得翻 'closed'、不得排退避重连
+    s1.fail(1000)
+    expect(statuses).toEqual(['connecting', 'open', 'closed', 'connecting'])
+    expect(sch.scheduled).toEqual([]) // 无重试 timer 排下 → 不会孵出第三条连接
+    expect(sch.pending()).toBe(0)
+    // ④ s2 未孤儿化：正常 open、join、send 全部落在 s2
+    s2.open()
+    expect(framesOf(s2)).toEqual([{ type: 'join', roomId: 'roomA' }])
+    expect(conn.send({ type: 'message', text: 'live' })).toBe(true)
+    expect(framesOf(s2)).toEqual([
+      { type: 'join', roomId: 'roomA' },
+      { type: 'message', text: 'live' },
+    ])
+    // ⑤ 旧 socket 在途帧：不得混入 onFrame
+    s1.emit({ type: 'message', id: 'ghost', ts: 1, roomId: 'roomA', nick: 'ANON-X', badge: '', text: 'stale' })
+    expect(frames).toEqual([])
+    // ⑥ 收尾 close()：s2 仍被引用（未 orphan），应收到 close 请求
+    conn.close()
+    expect(s2.closedRequested).toBe(true)
+    expect(StubSocket.instances).toHaveLength(2)
+    expect(sch.pending()).toBe(0)
+    expect(statuses).toEqual(['connecting', 'open', 'closed', 'connecting', 'open', 'closed'])
   })
 
   it('onFrame 透传 joined/assign/message/rate/join-error 原帧不做加工', async () => {

@@ -77,13 +77,20 @@ export function createBotConnection({
         ? `${url}${url.includes('?') ? '&' : '?'}nick=${encodeURIComponent(storedNick)}`
         : url
     ws = new WebSocketImpl(fullUrl)
+    // sock 同一性守卫（审查轮 1）：真实 WS 的事件是异步派发的——close() 后旧 socket 的
+    // open/close/message 可能迟到，此时 ws 已指向重连的新 socket。各 handler 捕获本次
+    // socket 引用，凡 ws !== sock 一律早退：不清引用、不翻状态、不排重连、不透传帧，
+    // 否则 stale close 会把活连接孤儿化并孵出第三条重复连接（useChat 存在同款竞态，范围外另行记录）
+    const sock = ws
     ws.onopen = () => {
+      if (ws !== sock) return
       retries = 0
       setStatus('open')
       // 首次连接进落地房；断线重连自动 rejoin 断开前所在房（B11）
       join(currentRoomId)
     }
     ws.onmessage = (ev) => {
+      if (ws !== sock) return // 旧连接在途帧不混入当前会话
       let frame
       try {
         frame = JSON.parse(ev.data)
@@ -93,6 +100,7 @@ export function createBotConnection({
       if (onFrame) onFrame(frame) // 薄传输层：所有帧原样透传，语义归 runner
     }
     ws.onclose = (ev) => {
+      if (ws !== sock) return
       ws = null
       const code = ev && typeof ev.code === 'number' ? ev.code : null
       setStatus('closed', code ? `close ${code}` : undefined)
@@ -103,6 +111,7 @@ export function createBotConnection({
     }
     ws.onerror = () => {
       // WebSocket 的 error 事件不带细节；真实原因在随后 close 事件的 code 里（同 useChat）
+      // 空壳不触碰 ws/状态，天然无需同一性守卫
     }
   }
 
