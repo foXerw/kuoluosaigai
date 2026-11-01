@@ -13,9 +13,17 @@
         :channel="channel"
         @enter="openChat"
         @reshuffle="reshuffle"
+        @botdeck="openBotDeck"
       />
       <ScanlineWipe v-if="phase === 'wiping'" @done="onWipeDone" />
       <ChatRoom v-if="chatOpen" :url="wsUrl" :channel="channel" @close="closeChat" />
+      <!-- 与 ChatRoom 并列不嵌套：关聊天室不影响 botStore（放飞模式根基） -->
+      <BotDeck
+        v-if="botDeckOpen"
+        :store="botStore"
+        :initial-room-id="channel.roomId"
+        @close="botDeckOpen = false"
+      />
     </div>
   </a-config-provider>
 </template>
@@ -25,8 +33,10 @@ import { ConfigProvider } from 'ant-design-vue'
 import BootSequence from './components/BootSequence.vue'
 import ChannelShell from './components/ChannelShell.vue'
 import ChatRoom from './components/ChatRoom.vue'
+import BotDeck from './components/BotDeck.vue'
 import ScanlineWipe from './components/ScanlineWipe.vue'
 import { pickChannel, reshuffleChannel } from './theme/channels'
+import { createBotStore } from './bots/store'
 
 // Safety fallback for the wipe phase. --wipe-ms is 600ms in src/styles/terminal.css;
 // this is 600ms wipe + 200ms slack in case the ScanlineWipe animationend never fires
@@ -51,6 +61,7 @@ export default {
     BootSequence,
     ChannelShell,
     ChatRoom,
+    BotDeck,
     ScanlineWipe,
   },
   data() {
@@ -58,6 +69,7 @@ export default {
       phase: 'boot',
       channel: null,
       chatOpen: false,
+      botDeckOpen: false,
       wsUrl: resolveWsUrl(),
       reducedMotion: false,
       wipeTimer: null,
@@ -100,8 +112,19 @@ export default {
       typeof window !== 'undefined' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
     this.channel = pickChannel()
+    // botStore：App 层单例（实例字段，不进 data——store 本体已是 reactive，
+    // 再包一层无益且防 Vue 深侦 runner 句柄）。构造不建连，只有 startBot 才连 WS。
+    this.botStore = createBotStore({ wsUrl: this.wsUrl })
+    this.botStore.load()
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', this.onUnload)
+    }
   },
   beforeUnmount() {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.onUnload)
+    }
+    this.botStore.dispose()
     if (this.wipeTimer) {
       clearTimeout(this.wipeTimer)
       this.wipeTimer = null
@@ -125,6 +148,14 @@ export default {
     },
     openChat() {
       this.chatOpen = true
+    },
+    openBotDeck() {
+      this.botDeckOpen = true
+    },
+    // B12：关页面/刷新前停全部 runner、释放租约、冲刷用量——
+    // 否则其他标签页被死租约挡 45s，且本会话 token 用量丢失
+    onUnload() {
+      this.botStore.dispose()
     },
     closeChat() {
       this.chatOpen = false

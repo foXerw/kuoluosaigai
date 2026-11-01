@@ -12,6 +12,7 @@ describe('App', () => {
     ScanlineWipe: { template: '<div class="wipe-stub" @click="$emit(\'done\')" />', emits: ['done'] },
     ChannelShell: true,
     ChatRoom: true,
+    BotDeck: true,
   }
 
   // enter/close 交互桩：shell 点击 → enter；chat 点击 → close
@@ -19,8 +20,18 @@ describe('App', () => {
     'a-config-provider': { template: '<div><slot /></div>' },
     BootSequence: true,
     ScanlineWipe: true,
-    ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'enter\')" />', emits: ['enter', 'reshuffle'] },
+    ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'enter\')" />', emits: ['enter', 'reshuffle', 'botdeck'] },
     ChatRoom: { name: 'ChatRoom', template: '<div class="chat-stub" @click="$emit(\'close\')" />', emits: ['close'] },
+  }
+
+  // botdeck 交互桩：shell 点击 → botdeck；deck 点击 → close
+  const deckStubs = {
+    'a-config-provider': { template: '<div><slot /></div>' },
+    BootSequence: true,
+    ScanlineWipe: true,
+    ChannelShell: { name: 'ChannelShell', template: '<div class="shell-stub" @click="$emit(\'botdeck\')" />', emits: ['enter', 'reshuffle', 'botdeck'] },
+    ChatRoom: { name: 'ChatRoom', template: '<div class="chat-stub" @click="$emit(\'close\')" />', emits: ['close'] },
+    BotDeck: { name: 'BotDeck', template: '<div class="deck-stub" @click="$emit(\'close\')" />', emits: ['close'] },
   }
 
   it('starts in boot phase with only BootSequence mounted', () => {
@@ -121,6 +132,64 @@ describe('App', () => {
     expect(document.documentElement.style.getPropertyValue('--app-glow')).toBe(magenta.glow)
     document.documentElement.style.removeProperty('--app-color')
     document.documentElement.style.removeProperty('--app-glow')
+  })
+
+  it('creates botStore in created and loads persisted config', () => {
+    const wrapper = mount(App, { global: { stubs } })
+    expect(wrapper.vm.botStore).toBeTruthy()
+    expect(Array.isArray(wrapper.vm.botStore.bots)).toBe(true)
+    expect(wrapper.vm.botStore.load).toBeTypeOf('function')
+    expect(wrapper.vm.botDeckOpen).toBe(false)
+    wrapper.vm.botStore.dispose()
+  })
+
+  it('botdeck 事件 → BotDeck 渲染（stub 断言存在即可）；关闭聊天室弹窗不影响 store（botStore 引用不变）', async () => {
+    const wrapper = mount(App, { global: { stubs: deckStubs } })
+    wrapper.vm.onReady()
+    wrapper.vm.onWipeDone()
+    await wrapper.vm.$nextTick()
+    const store = wrapper.vm.botStore
+    expect(wrapper.find('.deck-stub').exists()).toBe(false)
+
+    await wrapper.find('.shell-stub').trigger('click') // botdeck
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.deck-stub').exists()).toBe(true)
+
+    // 聊天室开着时开 deck，再关聊天室：deck 不闪断、store 引用不变（放飞模式根基）
+    wrapper.vm.openChat()
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.chat-stub').trigger('click') // closeChat
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.botStore).toBe(store)
+    expect(wrapper.find('.deck-stub').exists()).toBe(true)
+
+    await wrapper.find('.deck-stub').trigger('click') // BotDeck @close
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.deck-stub').exists()).toBe(false)
+    expect(wrapper.vm.botStore).toBe(store)
+    wrapper.vm.botStore.dispose()
+  })
+
+  it('BotDeck receives the landing channel roomId as initialRoomId', async () => {
+    const wrapper = mount(App, { global: { stubs } })
+    wrapper.vm.botDeckOpen = true
+    await wrapper.vm.$nextTick()
+    const deck = wrapper.findComponent({ name: 'BotDeck' })
+    expect(deck.exists()).toBe(true)
+    expect(deck.props('initialRoomId')).toBe(wrapper.vm.channel.roomId)
+    wrapper.vm.botStore.dispose()
+  })
+
+  it('beforeunload → store.dispose 被调（B12）；unmount 后监听器移除，再触发不重复 dispose', () => {
+    const wrapper = mount(App, { global: { stubs } })
+    const disposeSpy = vi.spyOn(wrapper.vm.botStore, 'dispose')
+    window.dispatchEvent(new Event('beforeunload'))
+    expect(disposeSpy).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+    disposeSpy.mockClear()
+    window.dispatchEvent(new Event('beforeunload'))
+    expect(disposeSpy).not.toHaveBeenCalled()
   })
 })
 

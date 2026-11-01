@@ -116,6 +116,8 @@ export default {
   components: { BotCard },
   props: {
     store: { type: Object, required: true },
+    // 新建表单默认房间：App 传落地房；缺省时退回首个公共房（向后兼容）
+    initialRoomId: { type: String, default: '' },
   },
   emits: ['close'],
   data() {
@@ -130,7 +132,7 @@ export default {
         providerId: null,
         model: '',
         temperature: 0.7,
-        roomId: PUBLIC_ROOM_IDS[0] || '',
+        roomId: this.initialRoomId || PUBLIC_ROOM_IDS[0] || '',
       },
       createError: '',
     }

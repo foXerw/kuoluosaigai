@@ -11,7 +11,10 @@
     <footer class="shell__status">
       <span class="shell__online">● {{ online }} online</span>
       <span class="shell__clock">{{ clock }}</span>
-      <button class="shell__reshuffle" @click="$emit('reshuffle')">🔀 RESHUFFLE</button>
+      <span class="shell__actions">
+        <button class="shell__botdeck" @click="$emit('botdeck')">🤖 BOT DECK</button>
+        <button class="shell__reshuffle" @click="$emit('reshuffle')">🔀 RESHUFFLE</button>
+      </span>
     </footer>
   </div>
 </template>
@@ -26,7 +29,7 @@ export default {
   props: {
     channel: { type: Object, required: true },
   },
-  emits: ['enter', 'reshuffle'],
+  emits: ['enter', 'reshuffle', 'botdeck'],
   data() {
     return {
       online: 1 + Math.floor(Math.random() * 99),
@@ -81,7 +84,12 @@ export default {
   position: relative;
   z-index: 3;
 }
-.shell__reshuffle {
+.shell__actions {
+  display: flex;
+  gap: 8px;
+}
+.shell__reshuffle,
+.shell__botdeck {
   background: none;
   border: 1px solid var(--app-color);
   color: var(--app-color);

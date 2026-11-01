@@ -28,4 +28,18 @@ describe('ChannelShell', () => {
     await wrapper.find('.shell__reshuffle').trigger('click')
     expect(wrapper.emitted('reshuffle')).toBeTruthy()
   })
+
+  it('footer 有 BOT DECK 按钮，点击 emit("botdeck")', async () => {
+    wrapper = mount(ChannelShell, {
+      props: { channel: CHANNEL },
+      global: { stubs: { CenterGate: true } },
+    })
+    const btn = wrapper.find('.shell__botdeck')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toContain('BOT DECK')
+    await btn.trigger('click')
+    expect(wrapper.emitted('botdeck')).toBeTruthy()
+    // 两按钮互不串线：BOT DECK 不应触发 reshuffle
+    expect(wrapper.emitted('reshuffle')).toBeFalsy()
+  })
 })

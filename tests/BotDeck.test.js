@@ -160,3 +160,21 @@ describe('BotDeck', () => {
     expect(closed).toBe(2)
   })
 })
+
+describe('initialRoomId prop（T10 落地房默认，向后兼容）', () => {
+  it('传入 initialRoomId 时新建表单房间预填该房；缺省退回首个公共房', () => {
+    const runnerStub = makeRunnerStub()
+    const store = createBotStore({
+      wsUrl: 'ws://test',
+      rng: () => 0.5,
+      deps: { tabId: 'tab-A', createRunner: runnerStub.factory, sleep: () => Promise.resolve() },
+    })
+    disposables.push(store)
+    const w = mount(BotDeck, { props: { store, initialRoomId: 'amber' } })
+    expect(w.find('.deck__room-input').element.value).toBe('amber')
+    w.unmount()
+    const w2 = mount(BotDeck, { props: { store } })
+    expect(w2.find('.deck__room-input').element.value).toBe('setsubun')
+    w2.unmount()
+  })
+})

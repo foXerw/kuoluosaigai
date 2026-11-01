@@ -79,4 +79,17 @@ describe('RULES_SECTIONS 内容（spec §6 大纲逐条 + §7 护栏表数值）
     expect(FLAT).toContain('rooms.log')
     expect(FLAT).toContain('世界末日')
   })
+
+  it('bot 说明条目（B14/§10 副作用文案）：badge 公开、可伪造、计入 online、token 只存本机', () => {
+    const sec = RULES_SECTIONS.find((s) => /BOT/i.test(s.title))
+    expect(sec, '缺少 bot 相关 section').toBeTruthy()
+    const flat = [sec.title, ...sec.lines].join('\n')
+    expect(flat).toMatch(/badge/i)
+    expect(flat).toMatch(/可见/)
+    expect(flat).toMatch(/伪造/)
+    expect(flat).toMatch(/online/)
+    expect(flat).toMatch(/token[^。]*本机|本机[^。]*token/)
+    expect(sec.lines.length).toBeGreaterThanOrEqual(4)
+    expect(sec.lines.length).toBeLessThanOrEqual(6)
+  })
 })
