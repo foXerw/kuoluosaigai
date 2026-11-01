@@ -7,6 +7,7 @@ import {
   PROVIDER_PRESETS,
 } from '../src/bots/store'
 import { createIdleScheduler } from '../src/bots/rhythm'
+import { createTabLease, LEASE_KEY } from '../src/bots/lease'
 
 // Task 8 / spec §11「botStore」矩阵 + Review Focus 3/5：持久化 roundtrip（B15）、
 // 写失败降级（B17）、MAX_BOTS、租约互斥（B20 端到端）、闲置调度缝合、家族 nick、
@@ -51,6 +52,32 @@ function makeLeaseStub(tabId, table) {
   return { lease, calls }
 }
 
+// 审查轮 1 Finding #3：acquire 挂起在手动开闸的 Promise 上，制造 await 窗口竞态
+function makeGatedLease(tabId, table) {
+  const calls = { acquire: [], heartbeat: [], release: [], releaseAll: 0 }
+  let gate = null
+  const lease = {
+    acquire(id) {
+      calls.acquire.push(id)
+      return new Promise((resolve) => {
+        gate = { resolve: (v) => { if (v) table[id] = tabId; resolve(v) } }
+      })
+    },
+    release(id) {
+      calls.release.push(id)
+      if (table[id] === tabId) delete table[id]
+    },
+    releaseAll() {
+      calls.releaseAll += 1
+      for (const k of Object.keys(table)) if (table[k] === tabId) delete table[k]
+    },
+    heartbeat(id) { calls.heartbeat.push(id) },
+    isHeldElsewhere(id) { return !!table[id] && table[id] !== tabId },
+    degraded: false,
+  }
+  return { lease, calls, openGate: (v) => { const g = gate; gate = null; g.resolve(v) } }
+}
+
 function makeRunnerStub() {
   const all = []
   const byBot = new Map()
@@ -61,6 +88,9 @@ function makeRunnerStub() {
       startCalls: 0,
       stopReasons: [],
       pokes: 0,
+      pokeOpts: [],
+      eligibleCalls: 0,
+      rollCalls: 0,
       switches: [],
       clearCalls: 0,
       buffer: [{ id: 'f1', nick: 'ANON-X', text: 'hello', roomId: opts.bot.roomId }],
@@ -72,7 +102,9 @@ function makeRunnerStub() {
       switchRoom(roomId) { r.switches.push(roomId) },
       clearBuffer() { r.clearCalls += 1; r.buffer = [] },
       getBuffer() { return r.buffer },
-      pokeIdle() { r.pokes += 1 },
+      pokeIdle(o) { r.pokes += 1; r.pokeOpts.push(o === undefined ? null : o) },
+      idleEligible() { r.eligibleCalls += 1; return r._eligible ? r._eligible() : true },
+      idleRoll() { r.rollCalls += 1; return r._roll ? r._roll() : true },
       getState() { return { status: 'fake', started: r.startCalls > 0 } },
     }
     all.push(r)
@@ -93,7 +125,7 @@ function setup(over = {}) {
   const storage = over.storage || makeMemStorage()
   const ss = over.ss || makeMemStorage()
   const table = over.table || {}
-  const leaseStub = makeLeaseStub(over.tabId || 'tab-A', table)
+  const leaseStub = over.leaseStub || makeLeaseStub(over.tabId || 'tab-A', table)
   const runnerStub = makeRunnerStub()
   const store = createBotStore({
     wsUrl: 'ws://test',
@@ -316,6 +348,71 @@ describe('startBot 租约互斥', () => {
     const loser = okA ? storeB : storeA
     expect(loser.bots[0].rt.otherTab).toBe(true)
   })
+
+  it('B20 端到端·真租约（审查轮 1 #2）：两 store 共享同一 mock storage + 真 createTabLease，并发 startBot → 恰一个成功', async () => {
+    const storage = makeMemStorage() // 两 tab 真正共享的 localStorage
+    const runnerStub = makeRunnerStub()
+    const mk = (tabId) => createBotStore({
+      wsUrl: 'ws://test',
+      storage,
+      sessionStorage: makeMemStorage(),
+      rng: () => 0.5,
+      now: () => 0,
+      deps: {
+        createLease: (o) => createTabLease({ ...o, tabId }), // 真 lease，仅 RECHECK sleep 立即化
+        createRunner: runnerStub.factory,
+        createScheduler: defaultScheduler,
+        sleep: () => Promise.resolve(),
+      },
+    })
+    const storeA = mk('tab-A')
+    const storeB = mk('tab-B')
+    for (const s of [storeA, storeB]) {
+      s.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+      s.addBot({ id: 'b1', ...CFG })
+    }
+    const [okA, okB] = await Promise.all([storeA.startBot('b1'), storeB.startBot('b1')])
+    expect([okA, okB].filter(Boolean).length).toBe(1)
+    expect(okA).toBe(true) // A 先写 holder，B 见新鲜他人条目 → 立即 false
+    expect(okB).toBe(false)
+    expect(storeA.bots[0].rt.otherTab).toBe(false)
+    expect(storeB.bots[0].rt.otherTab).toBe(true)
+    expect(runnerStub.all.length).toBe(1)
+    const leaseTable = JSON.parse(storage._map.get(LEASE_KEY))
+    expect(leaseTable.b1.tabId).toBe('tab-A')
+  })
+
+  it('startBot 竞态守卫（审查轮 1 #3）：acquire 等待窗口内 removeBot → 不产出幽灵 runner，已取得的租约归还', async () => {
+    const table = {}
+    const gated = makeGatedLease('tab-A', table)
+    const h = setup({ leaseStub: gated })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    const p = h.store.startBot('b1') // 挂在 acquire 上
+    expect(h.runnerStub.all.length).toBe(0)
+    h.store.removeBot('b1') // 窗口期删除配置
+    gated.openGate(true) // 随后才取得租约
+    await expect(p).resolves.toBe(false)
+    expect(h.runnerStub.all.length).toBe(0) // 幽灵 runner 不得出现
+    expect(table.b1).toBeUndefined() // 取得即归还
+    expect(gated.calls.release).toContain('b1')
+  })
+
+  it('startBot 竞态守卫（审查轮 1 #3）：acquire 等待窗口内 stopBot → start 作废且租约归还，不静默复活', async () => {
+    const table = {}
+    const gated = makeGatedLease('tab-A', table)
+    const h = setup({ leaseStub: gated })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    const p = h.store.startBot('b1')
+    h.store.stopBot('b1') // 窗口期用户点停
+    gated.openGate(true)
+    await expect(p).resolves.toBe(false)
+    expect(h.runnerStub.all.length).toBe(0)
+    expect(table.b1).toBeUndefined()
+    expect(gated.calls.release).toContain('b1')
+    expect(h.store.bots[0].rt.status).toBe('stopped')
+  })
 })
 
 describe('闲置调度', () => {
@@ -345,6 +442,8 @@ describe('闲置调度', () => {
     h.advance(15000) // tick1：窗口到期 → 候选 = 房内运行 bot → winner → pokeIdle
     expect(made[0].ticks[0]).toEqual(['b1'])
     expect(r1.pokes).toBe(1)
+    expect(r1.pokeOpts[0]).toEqual({ preRolled: true }) // 真骰子在 candidates（审查轮 1 #1）
+    expect(r1.eligibleCalls).toBeGreaterThan(0) // 门禁经 runner.idleEligible 代理
 
     h.advance(15000) // tick2：afterIdle 窗口未到 → 不再 poke
     expect(r1.pokes).toBe(1)
@@ -373,6 +472,57 @@ describe('闲置调度', () => {
     expect(made[2].ticks[0]).toEqual(['b1'])
     expect(r2.pokes).toBe(0)
     h.advance(15000) // t=105000 ≥ 100000 → 新房 winner
+    expect(r2.pokes).toBe(1)
+  })
+
+  it('真骰子透传（审查轮 1 #1）：rollIdle 未中 → 全员未过短窗重开（不误记成功进长窗）；冷却 bot 不作 winner 且被短路不掷', async () => {
+    const made = []
+    const createScheduler = (opts) => {
+      const real = createIdleScheduler({
+        ...opts,
+        params: { idleWindowAfterChatMs: [10000, 10000], idleWindowAfterIdleMs: [400000, 400000] },
+      })
+      const rec = {
+        ticks: [],
+        notifyActivity() { real.notifyActivity() },
+        tick(cands) { rec.ticks.push(cands.map((c) => c.id)); return real.tick(cands) },
+      }
+      made.push(rec)
+      return rec
+    }
+    const h = setup({ createScheduler })
+    h.store.addProvider({ id: 'p1', name: 'D', baseUrl: 'https://d', apiKey: 'k' })
+    h.store.addBot({ id: 'b1', ...CFG })
+    h.store.addBot({ id: 'b2', ...CFG, name: 'n2' }) // 同房
+    await h.store.startBot('b1')
+    await h.store.startBot('b2')
+    const r1 = h.runnerStub.byBot.get('b1')
+    const r2 = h.runnerStub.byBot.get('b2')
+    r1.opts.onState({ rev: 1, status: 'open', nick: 'ANON-1' })
+    r2.opts.onState({ rev: 1, status: 'open', nick: 'ANON-2' })
+
+    // 全员未过：b1 冷却门禁假、b2 rollIdle 假 → 无 winner，且 b1 被短路根本不掷
+    r1._eligible = () => false
+    let b1RollAsked = false
+    r1._roll = () => { b1RollAsked = true; return true }
+    r2._roll = () => false
+    h.advance(15000) // tick1（窗口 10000 已到期）
+    expect(made[0].ticks[0]).toEqual(['b1', 'b2'])
+    expect(b1RollAsked).toBe(false) // canInitiateIdle 不过 → 短路不掷（B21 门禁经 idleEligible）
+    expect(r1.pokes).toBe(0)
+    expect(r2.pokes).toBe(0)
+
+    h.advance(15000) // tick2：全员未过按 afterChat 短窗重开（30000 前赴的是 25000 的短窗，不是 400000 长窗）
+    expect(made[0].ticks.length).toBe(2)
+    expect(r2.pokes).toBe(0)
+
+    // b2 骰子改为命中 → tick3（45000 ≥ 40000）winner → pokeIdle({preRolled:true}) 直发
+    r2._roll = () => true
+    h.advance(15000)
+    expect(r2.pokes).toBe(1)
+    expect(r2.pokeOpts[0]).toEqual({ preRolled: true }) // 已问过 idleRoll，runner 不再二次掷
+    expect(r1.pokes).toBe(0) // 冷却 bot 始终不作 winner
+    h.advance(15000) // 成功发起后才是 afterIdle 长窗
     expect(r2.pokes).toBe(1)
   })
 })

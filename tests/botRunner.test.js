@@ -362,6 +362,47 @@ describe('createBotRunner', () => {
     expect(framesOf(s).filter((f) => f.type === 'message')).toHaveLength(1)
   })
 
+  it('idleEligible/idleRoll 暴露（审查轮 1 #1）：门禁查询不掷骰；idleRoll 恰 1 掷；rate 冷却即 false', async () => {
+    // mkRng 逐值弹出+耗尽即抛 → 精确记账：构造 1 掷 + rate 冷却 1 掷，其余 0
+    const ctx = makeRunner({ rng: mkRng([0.5, 0.5]) })
+    expect(ctx.runner.idleEligible()).toBe(false) // 未 start：rhythm 尚不存在
+    const s = land(ctx) // start → rhythm 构造（第 1 掷）；open + joined
+    expect(ctx.runner.idleEligible()).toBe(true) // 不消耗 rng（第 2 掷预留给 rate）
+    ctx.runner.idleEligible()
+    s.emit({ type: 'rate', ts: 1 }) // penalize 掷全新冷却（第 2 掷）
+    expect(ctx.runner.idleEligible()).toBe(false) // B21 门禁经真 rhythm
+    // idleRoll 恰 1 掷：chattiness 50 → factor 1 → 阈值 0.3；0.2 命中（mkRng 无余值→多掷即抛）
+    const b = makeRunner({ rng: mkRng([0.5, 0.2]) }) // 构造 + rollIdle
+    land(b)
+    expect(b.runner.idleRoll()).toBe(true)
+    // transport 未开 → eligible false
+    const c = makeRunner({ rng: mkRng([0.5]) })
+    c.runner.start() // 仅构造 1 掷
+    expect(c.runner.idleEligible()).toBe(false)
+  })
+
+  it('pokeIdle({preRolled:true})（审查轮 1 #1）：跳过内部 canInitiateIdle/rollIdle，保留 transport 门禁；无参行为不变', async () => {
+    // 冷却中：无参 pokeIdle 静默（既有行为）；preRolled 直发——store 已问过 idleEligible+idleRoll
+    const ctx = makeRunner({ rng: mkRng([0.5, 0.5, 0.5, 0.5]) }) // 构造; rate 冷却; think=5000; typing=1500（preRolled 未再掷 rollIdle——第 3 掷即 think）
+    const s = land(ctx)
+    s.emit({ type: 'rate', ts: 1 })
+    ctx.runner.pokeIdle()
+    expect(ctx.sleepQ).toHaveLength(0)
+    ctx.runner.pokeIdle({ preRolled: true })
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000]) // 不再问 rhythm 门禁、不再掷 rollIdle
+    ctx.resolveSleep()
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(ctx.fetchImpl.mock.calls[0][1].body)
+    expect(body.messages[body.messages.length - 1]).toEqual({ role: 'system', content: IDLE_KICK })
+    // transport 门禁保留：socket 未 open → preRolled 也不发（rng 仅够构造，多发即抛）
+    const c = makeRunner({ rng: mkRng([0.5]) })
+    c.runner.start()
+    c.runner.pokeIdle({ preRolled: true })
+    expect(c.sleepQ).toHaveLength(0)
+    expect(c.fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('mentions 标志：text 含 bot 名子串大小写不敏感；非点名在低概率下不触发', async () => {
     // chattiness=0 → factor 0.2：人类基础 0.08 ≤ 0.1 < 点名 0.18——rng 恒 0.1 只有点名命中
     const ctx = makeRunner({ bot: { chattiness: 0 }, rng: always(0.1) })

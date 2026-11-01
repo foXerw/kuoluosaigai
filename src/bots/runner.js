@@ -64,7 +64,8 @@ function between(rng, [lo, hi]) {
  * }} options
  * @returns {{ start: () => void, stop: (reason?: string) => void,
  *   switchRoom: (roomId: string) => void, clearBuffer: () => void,
- *   getBuffer: () => object[], pokeIdle: () => void, getState: () => object }}
+ *   getBuffer: () => object[], pokeIdle: (opts?: { preRolled?: boolean }) => void,
+ *   idleEligible: () => boolean, idleRoll: () => boolean, getState: () => object }}
  */
 export function createBotRunner({
   bot,
@@ -426,12 +427,38 @@ export function createBotRunner({
     patch({ rev })
   }
 
-  function pokeIdle() {
+  /**
+   * 闲置发起资格查询（审查轮 1 #1，供 Task 8 store 调度器 candidates 代理）：
+   * transport open && rhythm B21 门禁。不掷骰（settle 惰性 AFK 结算除外）。
+   */
+  function idleEligible() {
+    if (!started || !rhythm) return false
+    return transport === 'open' && rhythm.canInitiateIdle()
+  }
+
+  /**
+   * 权威闲置掷骰（同上供 candidates 代理）：恰 1 次 rng（含 chattiness 系数）。
+   * store 问过 true 后应以 pokeIdle({preRolled:true}) 发起，避免二次掷平方化概率。
+   */
+  function idleRoll() {
+    if (!rhythm) return false
+    return rhythm.rollIdle()
+  }
+
+  /**
+   * 发起一次闲置发言。
+   * @param {{ preRolled?: boolean }} [opts] preRolled=true：调用方（store 调度器）
+   *   已依次问过 idleEligible + idleRoll，此处跳过内部门禁与掷骰（transport 门禁保留）
+   *   直接走发起管道；无参调用行为与既往完全一致（向后兼容）。
+   */
+  function pokeIdle(opts = {}) {
     if (!started || !rhythm || !connection) return
-    if (transport !== 'open') return // 连接未开：不发请求白烧 token
-    // B21 门禁：AFK/冷却/小时预算/最小间隔任一命中即静默（不掷 rollIdle、不消耗 rng）
-    if (!rhythm.canInitiateIdle()) return
-    if (!rhythm.rollIdle()) return
+    if (transport !== 'open') return // 连接未开：不发请求白烧 token（preRolled 同样保留此门禁）
+    if (!opts.preRolled) {
+      // B21 门禁：AFK/冷却/小时预算/最小间隔任一命中即静默（不掷 rollIdle、不消耗 rng）
+      if (!rhythm.canInitiateIdle()) return
+      if (!rhythm.rollIdle()) return
+    }
     // 同管道但 idle=true：思考时长走 rhythm 同款 thinkMs 区间
     kick({ idle: true, thinkMs: between(rng, RHYTHM_DEFAULTS.thinkMs), frame: null })
   }
@@ -456,6 +483,8 @@ export function createBotRunner({
     clearBuffer,
     getBuffer: () => buffer.all(),
     pokeIdle,
+    idleEligible,
+    idleRoll,
     getState,
   }
 }

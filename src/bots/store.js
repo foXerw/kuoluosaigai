@@ -4,12 +4,15 @@
 // 2) runner 注册表：runner 实例存非响应式 Map（reactive 只放配置 + rt 视图）；
 //    startBot 每次新建 runner（旧实例先停），stop 后保留实例供 getBuffer 观战读取。
 // 3) 跨标签租约互斥（B20）：startBot 先 acquire，败者 rt.otherTab=true；
+//    acquire 是 await——resolve 后复查启动意图与 bot 存续（窗口期 remove/stop/dispose
+//    插队则归还已取得租约并放弃，审查轮 1 #3 防幽灵 runner）；
 //    运行期由全局 15s interval 驱动 lease.heartbeat；stop/fatal-stop 释放租约。
 // 4) 家族闲置调度：每房一个 createIdleScheduler，全局 interval（idleCheckMs=15s）遍历
-//    运行中 bot 按房分组 tick；candidates 用代理对象 {id, canInitiateIdle, rollIdle}——
-//    canInitiateIdle 代理 transport 门禁（rt.status==='open'），rollIdle 恒 true：
-//    权威闲置掷骰在 runner.pokeIdle 内部（rhythm.canInitiateIdle + rollIdle 含 chattiness
-//    系数），store 再掷会把概率平方化；pokeIdle 内重复门禁属双保险。
+//    运行中 bot 按房分组 tick；candidates 是真门禁+真骰子的代理——
+//    canInitiateIdle → runner.idleEligible()（transport && rhythm B21 门禁），
+//    rollIdle → runner.idleRoll()（rhythm 权威掷骰，含 chattiness 系数，恰 1 次 rng）；
+//    调度器据此洗牌轮掷、首个通过者中签，winner 以 pokeIdle({preRolled:true}) 直发
+//    （不再二次掷，防概率平方化）；全员未过 → 调度器按 afterChat 短窗重开（审查轮 1 #1）。
 //    房内无运行 bot → 该房调度器回收。runner onEvent('activity') → 对应房 notifyActivity。
 // 5) 用量累计：onState.session 绝对值与基线差分增量写 lifetime；持久化节流至多每 10s
 //    一次（trailing 合并，内存即时更新）。
@@ -73,6 +76,8 @@ export function createBotStore({
   const schedulers = new Map() // roomId → idle scheduler
   const sessionBaselines = new Map() // botId → 本 runner 上次上报的绝对 session 用量
   const running = new Set() // store 视角「运行中」的 botId（含 connecting/cooling）
+  const intent = new Map() // botId → 最新 startBot 尝试的 token（审查轮 1 #3：await 窗口竞态作废）
+  let startSeq = 0
   let tickTimer = null
   let lifetimeTimer = null
   let lastPersistAt = -Infinity
@@ -148,6 +153,7 @@ export function createBotStore({
       }
       runners.delete(id)
       running.delete(id)
+      intent.delete(id)
       lease.release(id)
       sessionBaselines.delete(id)
       delete store.lifetime[id]
@@ -164,11 +170,15 @@ export function createBotStore({
       const item = findBot(id)
       if (!item) return false
       if (running.has(id)) return true
+      const token = ++startSeq
+      intent.set(id, token)
       const rt = item.rt
       rt.otherTab = false
       rt.error = null // null-as-absent 只作用于 runner patch 合并；store 主动复位
       const ok = await lease.acquire(id)
-      if (disposed) {
+      // acquire 的 await 窗口内 removeBot/stopBot/dispose 插队 → 意图作废；
+      // 已取得的租约必须归还，否则本 bot 被幽灵持有着 60s 谁都起不来（审查轮 1 #3）
+      if (disposed || intent.get(id) !== token || !findBot(id)) {
         if (ok) lease.release(id)
         return false
       }
@@ -259,6 +269,7 @@ export function createBotStore({
         }
       }
       running.clear()
+      intent.clear()
       lease.releaseAll()
       schedulers.clear()
       persist() // 最终落盘 lifetime（B12：dispose 前冲刷）
@@ -289,6 +300,7 @@ export function createBotStore({
   }
 
   function stopBotInternal(id) {
+    intent.delete(id) // 作废在途 startBot 尝试（审查轮 1 #3）
     const was = running.delete(id)
     const r = runners.get(id)
     if (r) {
@@ -548,19 +560,27 @@ export function createBotStore({
         if (!item) continue
         const r = item.rt.roomId || item.roomId
         if (r !== room) continue
+        const botId = item.id
         candidates.push({
-          id: item.id,
-          // transport 门禁代理（pokeIdle 内部还会再过一次，双保险无害）；
-          // rollIdle 恒 true——权威掷骰归 runner.pokeIdle（rhythm 内部含 chattiness 系数），
-          // store 侧重复掷会把概率平方化，故不在此消费 rng。
-          canInitiateIdle: () => item.rt.status === 'open',
-          rollIdle: () => true,
+          id: botId,
+          // 真门禁+真骰子代理（审查轮 1 #1）：idleEligible 含 transport 与 rhythm B21
+          // 全部门禁；idleRoll 消耗恰 1 次 rng（rhythm 权威掷骰，含 chattiness 系数）。
+          // 调度器据此「依次轮掷直到首个通过」，全员未过走 afterChat 短窗重开。
+          canInitiateIdle: () => {
+            const runner = runners.get(botId)
+            return runner ? runner.idleEligible() === true : false
+          },
+          rollIdle: () => {
+            const runner = runners.get(botId)
+            return runner ? runner.idleRoll() === true : false
+          },
         })
       }
       const winner = sched.tick(candidates)
       if (winner) {
         const runner = runners.get(winner)
-        if (runner) runner.pokeIdle()
+        // candidates 已问过 eligible+roll → preRolled 直发，避免 runner 二次掷平方化概率
+        if (runner) runner.pokeIdle({ preRolled: true })
       }
     }
     maybeStopTick()
