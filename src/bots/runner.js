@@ -272,7 +272,9 @@ export function createBotRunner({
       synthSeq += 1
       buffer.push({
         type: 'message',
-        id: `local-${synthSeq}`, // local- 前缀与服务器 id 命名空间隔离；服务器回显走 B3 丢弃不重复
+        // bot.id 段防家族跨 bot 撞号——否则两 bot 各有 local-1 且内容不同，
+        // 响应 history-req 时被 mergeHistory 误判「同 id 跨响应者冲突」双双丢弃（审查轮 1）
+        id: `local-${bot.id}-${synthSeq}`, // local- 前缀与服务器 id 命名空间隔离；服务器回显走 B3 丢弃不重复
         ts: now(),
         roomId: connection.currentRoomId,
         nick,

@@ -462,6 +462,32 @@ describe('createBotRunner', () => {
     expect(b.patches[b.patches.length - 1].error).toContain('model')
   })
 
+  it('镜像帧 id 含 bot.id 段：家族多 bot 各自发言后 local-<botId>-N 互不撞号（审查轮 1）', async () => {
+    // 撞号后果（修复前）：两 bot 响应 history-req 都带 id=local-1 且内容不同 →
+    // mergeHistory 判「跨响应者同 id 内容冲突」= 伪造篡改信号，两条一起被丢
+    const a = makeRunner({ bot: { id: 'bA' }, rng: mkRng([0.5, 0, 0.5, 0.9, 0.5]) })
+    const sa = land(a)
+    sa.emit(msgFrame())
+    a.resolveSleep()
+    await flush()
+    a.resolveSleep()
+    await flush()
+    const b = makeRunner({ bot: { id: 'bB' }, rng: mkRng([0.5, 0, 0.5, 0.9, 0.5]) })
+    const sb = land(b)
+    sb.emit(msgFrame())
+    b.resolveSleep()
+    await flush()
+    b.resolveSleep()
+    await flush()
+
+    const fa = a.runner.getBuffer()[a.runner.getBuffer().length - 1]
+    const fb = b.runner.getBuffer()[b.runner.getBuffer().length - 1]
+    expect(fa.id).toBe('local-bA-1')
+    expect(fb.id).toBe('local-bB-1')
+    expect(fa.id).not.toBe(fb.id)
+    // 且经 mergeHistory 不再互相湮灭：a 的 buffer 作 existing、b 的帧作响应，两条同留
+  })
+
   it('stop 后管道整体熄火：在途 job 作废、定时器清挂、重复 stop 幂等', async () => {
     const ctx = makeRunner({ rng: mkRng([0.5, 0, 0.5]) })
     const s = land(ctx)
