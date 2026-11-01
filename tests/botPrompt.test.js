@@ -63,7 +63,7 @@ describe('buildSystemPrompt', () => {
   it('模板含硬约束（≤280/短句/禁 markdown/不承认 AI）', () => {
     const result = buildSystemPrompt({ name: 'X', persona: 'Y' })
     expect(result).toMatch(/280/)
-    expect(result).toMatch(/markdown|md|\*\*|\#/)
+    expect(result).toMatch(/markdown|md|\*\*|#/)
     expect(result).toMatch(/AI|人工智能|助手|Bot/)
   })
 
