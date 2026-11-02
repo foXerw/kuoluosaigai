@@ -17,6 +17,10 @@
 - 零新增运行时依赖（`bot-core` 与 `src/` 均不得引入新 npm 包；`ws` 只在 P1 的 daemon 包出现）
 - 测试基线 **362（323 客户端 + 39 服务端）**，**只增不减**；既有单测的**断言与用例一律不得改动**（import 路径行随搬包调整除外，见 R1）；**禁止为了通过而改断言**
 - **R1（预扫描裁定）**：`tests/botStore.test.js` 锚定的是"**断言零改动**"，不是"字节零改动"——它 `:9` import 了会被搬走的 `../src/bots/rhythm`，路径行必须随搬包改。留转发 shim 让路径不动是**更坏**的选择（第二个入口 = spec A8 core 分叉）。补偿证据：`git diff` 里该文件的改动**只允许出现在 import 块内**
+- **R1 例外（Task 1 审查追加）**：因搬运而**必然变红**的"反空跑目录计数"canary 允许同步改数值
+  （实例：`tests/botIsolation.test.js:102` 的 `≥8`→`≥2`，等于搬完后 `src/bots` 的真实文件数）。
+  它断言的是"这个目录还剩几个文件"，文件数因搬运而变，不改就是假红。**除这类目录计数外，任何断言仍不得改动**，
+  且改动必须在报告里单独披露。Task 5 会把 canary 重写成终态口径（`CORE ≥11 / SRC_BOTS ≥2`），届时以 Task 5 为准
 - 每个任务收尾**必须同时跑** `npm test` **和** `npm run build`（上一轮 eslint `no-undef` 让 vitest 全绿而构建炸机的教训，spec A9）
 - 持久化载荷格式**零迁移**：键 `kuoluosaigai:bots:v1`、`{version:1, providers, bots(剥 rt), lifetime}` 结构一字不改
 - 沿用协议护栏：发言 ≤10 条/分/连接、单条 ≤280 字、房间 ≤100 人、history-res ≤200 条（本阶段不改协议）
@@ -89,6 +93,9 @@ tests/
   `createContextBuffer` `createRhythm` `trailingFamilyStreak` `RHYTHM_DEFAULTS` `createIdleScheduler`
   `buildSystemPrompt` `buildMessages` `clampText` `MAX_TEXT` `IDLE_KICK`
   `chatCompletion` `LlmError` `createBotConnection` `createBotRunner`
+  **实际出口为 16 个符号**（Task 1 审查后校正）：另含 `SYSTEM_TEMPLATE` `BOT_BACKOFF`——
+  `exports` 映射封死了深层 import，这两个常量被 `botPrompt.test.js`/`botConnection.test.js` 消费，
+  不导出就只能改断言。**它们自此是永久公开面**，Task 4/P1 按这份 16 符号清单冻结，不按原 14。
 
 - [ ] **Step 1: 建骨架**
 
@@ -213,8 +220,11 @@ Expected: FAIL —— `Cannot find package 'kuoluosaigai-bot-core'` 或 `core.me
 ```bash
 git mv src/chat/historyMerge.js packages/bot-core/historyMerge.js
 ```
-`packages/bot-core/runner.js:33` → `import { mergeHistory } from './historyMerge'`；
-`src/composables/useChat.js:2` → `import { mergeHistory } from 'kuoluosaigai-bot-core'`；
+**R7：Node ESM 不解析无扩展名相对路径**——`packages/bot-core/runner.js:28-33` 六条 specifier **全部补 `.js`**
+（现状 `./buffer` `./rhythm` `./prompt` `./llm` `./connection` 五条无扩展名，第六条是爬回 `../../src/chat/historyMerge` 的那条）。
+`:33` 改为 `import { mergeHistory } from './historyMerge.js'`。漏掉任何一条，Step 5 的 node 检查就恒红，
+而 webpack/vitest 都能解析无扩展名——**只有真 Node 会炸，Node 恰是 P1 daemon 的宿主**，所以这是假绿陷阱。
+其余三处引用照改：`src/composables/useChat.js:2` → `import { mergeHistory } from 'kuoluosaigai-bot-core'`；
 `tests/historyMerge.test.js:2` → `import { mergeHistory } from 'kuoluosaigai-bot-core'`；
 `packages/bot-core/index.js` 追加 `export { mergeHistory } from './historyMerge.js'`。
 
