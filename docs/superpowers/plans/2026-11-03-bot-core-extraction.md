@@ -494,7 +494,15 @@ git add -A && git commit -m "refactor(bots): store 一刀切分为 core/deck + �
 
 **Files:**
 - Modify: `tests/botIsolation.test.js`
+- Modify: `packages/bot-core/runner.js`（仅 `:26` 那行 B18 头注释）、`packages/bot-core/prompt.js:2`、`packages/bot-core/llm.js:2`（**R9：注释与拓扑同步**）
 - Test: 同上（自身即测试）
+
+**R9（Task 4 审查后追加）**：检查器改的是"依赖拓扑的权威描述"，而这几处**注释**仍在描述搬家前的拓扑
+（`runner.js:26` 称"唯一跨界依赖 mergeHistory"——如今是包内依赖，core 已零跨界；`prompt.js:2`/`llm.js:2`
+头注释仍自称 `src/bots`）。注释与检查器若分两次改，中间任何一次审查都会看到自相矛盾的仓库，
+故并入本任务。**只许改注释文字，逻辑零改动。**
+另：`packages/bot-core/connection.js:7` 注释里含 "sessionStorage" 一词——它是本任务
+`stripComments` 的**真实样本**（应当**不**被误报），不要改它。
 
 **Interfaces:**
 - Consumes: Task 1–4 的最终目录形状
@@ -535,7 +543,7 @@ describe('P0 分层规则', () => {
 
 describe('实际扫描（反空跑，Review Focus 4）', () => {
   it('packages/bot-core 与 src/bots 都确实扫到文件，且数量下限达标', () => {
-    expect(jsFiles(CORE_DIR).length).toBeGreaterThanOrEqual(11)  // 8 模块 + index + deck + timing（R5）
+    expect(jsFiles(CORE_DIR).length).toBeGreaterThanOrEqual(10)  // 6 bot 模块 + historyMerge + index + deck + timing（R5 修正）
     expect(jsFiles(SRC_BOTS_DIR).length).toBeGreaterThanOrEqual(2)  // store.js + lease.js
   })
 
