@@ -1,5 +1,5 @@
 // Prompt 组装 —— 把 bot 人格 + 房间上下文映射为 OpenAI chat/completions messages。
-// 纯字符串/数组操作，无 IO，不依赖 Vue，不 import 其他 src/bots 模块。
+// 纯字符串/数组操作，无 IO，不依赖 Vue，不 import 其他 bot-core 模块。
 
 /**
  * 消息最大字符数。clampText 截断上限。

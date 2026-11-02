@@ -1,5 +1,5 @@
 // LlmClient（Task 4 / spec §4、§11）：OpenAI 兼容 chat/completions 客户端。
-// 原生 fetch + AbortController，零依赖、纯异步，不依赖 Vue、不 import 其他 src/bots 模块。
+// 原生 fetch + AbortController，零依赖、纯异步，不依赖 Vue、不 import 其他 bot-core 模块。
 //
 // 设计钉死（对 Task 7 runner 的契约，改动须同步 runner）：
 // - LlmError.kind ∈ auth|rate|server|timeout|network|bad-response，供 runner 分流

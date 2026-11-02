@@ -23,7 +23,8 @@
 //   固定安全文案（SLOW DOWN / NO SUCH ROOM / ROOM FULL / TOKEN 失效 / 配置缺失）。
 // - B11：退避重连与 rejoin 是 connection 的职责；runner 只在 onStatus 变化时镜像
 //   连接态，joined 回执清 rateStreak/冷却显示、rhythm 实例原样保留（预算/间隔连续）。
-// B18：不 import useChat/roomCache/roomList；唯一跨界依赖 mergeHistory（spec B2 明示允许）。
+// B18：不 import useChat/roomCache/roomList——搬家后 core 零跨界依赖
+// （mergeHistory 已随包内化为例行相对导入 ./historyMerge.js，spec B2 白名单使命完成）。
 
 import { createContextBuffer } from './buffer.js'
 import { createRhythm, trailingFamilyStreak, RHYTHM_DEFAULTS } from './rhythm.js'
