@@ -11,7 +11,9 @@
 // 不置 degraded。
 
 export const LEASE_KEY = 'kuoluosaigai:bots:lease'
-export const HEARTBEAT_MS = 15000
+// HEARTBEAT_MS 单点定义在 core（终审 M4：曾有第二份 15000 巧合相等而静默脱钩），
+// 这里只再导出，值不得改。STALE_MS 是租约私有语义，留在本文件。
+export { HEARTBEAT_MS } from 'kuoluosaigai-bot-core'
 export const STALE_MS = 60000
 export const RECHECK_MS = 150
 
