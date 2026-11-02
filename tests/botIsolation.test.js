@@ -259,6 +259,7 @@ describe('P0 分层规则', () => {
   it('core 纯度：localStorage/sessionStorage/document./window. 一律违规', () => {
     const cases = [
       `const s = globalThis.localStorage`,
+      `const s = globalThis.sessionStorage`,
       `ss.getItem('kuoluosaigai:nick')`,
       `document.title = 'x'`,
       `window.addEventListener('storage', h)`,
