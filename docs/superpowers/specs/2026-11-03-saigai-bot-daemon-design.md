@@ -131,6 +131,7 @@ packages/bot-core          kuoluosaigai-bot-core      纯 JS，无 DOM、无 Vue
 | `connection.js` | 167 | 已注入 `WebSocketImpl`，默认 `globalThis.WebSocket` | 传入 `ws` 包的 WebSocket |
 | `rhythm.js` | 284 | 无 | 原样 |
 | `runner.js` | 501 | 无 | 原样 |
+| `src/chat/historyMerge.js` | 63 | 无 | **随 core 搬走**（runner 的真实依赖）。必须进包而非留在 `src/`：Node 按最近 package.json 判定模块类型，core 是 `type: module`，而根包无 `type` 字段——`runner.js` 若相对 import 仓库外的 `src/chat/historyMerge.js`，Node 会按 CJS 解析直接炸；浏览器侧本无此约束，webpack/babel 两种格式都吃 |
 | `lease.js` | 162 | `localStorage`（跨标签互斥） | **不进 core**；daemon 不需要 |
 | `store.js` | 652 | `localStorage` + **`import { reactive } from 'vue'`** | **一刀切分，P0 的全部工作量在这** |
 
@@ -147,6 +148,8 @@ packages/bot-core          kuoluosaigai-bot-core      纯 JS，无 DOM、无 Vue
   daemon 侧 = 配置文件 loader + 一个非响应式状态快照推送。
 
 验收口径：**组件层 diff 尽量小**；`BotCard.vue`/`BotDeck.vue` 若必须改，只改 import 路径不改用法。
+
+实现裁定（P0 落地时定，比本节初稿多一句）：响应式采 `reactiveImpl` 注入而非 plain-state + onChange。原因是今日闭包大量直接改 `store.x`（persist/mergeState/调度全走同一对象），换成 plain-state + onChange 要重写全部变更点，并重新打开 A/B 方案里唯一没被终审打磨过的部分。
 
 ### 7.3 core 的宿主注入面（一次定形，后续阶段都靠它）
 
@@ -168,11 +171,27 @@ createDeck({
 持有者 PID 已死则视为陈旧锁并接管，接管时打一条 WARN）。
 PVE 场景的具体风险：`systemd` 重启时旧进程未退、或用户手动又开了一个 → 双份 bot 同房互踩。
 
+**P0 落地修正（本节初稿把锁列入了 P0）**：单实例锁**不在 P0 交付，改由 P1 daemon 承担**。
+锁的实现要用 `node:fs`（O_EXCL/读 PID），而 `node:fs` 不得进 `bot-core`——webpack 打前端
+bundle 时会试图把它打进浏览器包里，直接炸在构建上。core 侧的对应物只是 `lease` 端口 +
+`createNullLease`（恒真实现）；锁随 daemon 的 loader 一起长在 P1。
+
 ### 7.5 P0 交付判据
 
 `npm run build` 绿、`npm test` ≥361 绿、浏览器 BOT DECK 手测行为无变化、
 `packages/bot-core` 能在纯 Node 下被 `node -e "import('kuoluosaigai-bot-core')"` 载入并跑通
 一条对本地 `server/` 的连接（临时冒烟，不留测试）。
+
+**P0 验收实际执行记录（2026-11-03）**：
+- 「临时冒烟，不留测试」升级为**常驻 Node 环境 e2e** `tests/botCoreNodeE2e.test.js`（修正案 R15：
+  环境里没有浏览器也没有 puppeteer/playwright，手工点击不可执行，可自动化的部分以更强的形式钉死）。
+  单进程内起真 `server/`（临时端口 + `KUO_ROOMS_FILE` 指临时目录），`createBotConnection` 以
+  `globalThis.WebSocket`（Node 24 原生实现，正是 P1 daemon 的处境）连入公共房 `setsubun`，
+  真实协议双向收发：assign/joined 下行、join 广播与 message 上行、观察者发言回传 bot。零 LLM 调用。
+- 实测：build 绿、lint 绿、`npm test` **386** 绿（客户端 347 + 服务端 39）。
+- **浏览器 BOT DECK 手工点击流未执行**（本环境无浏览器）——留给人类下一次开站时按清单核验：
+  BOT 入口打开 → 新建 provider + bot → 启动进公共房发言 → 观战窗有缓冲 → 刷新后配置仍在
+  （localStorage 键不变）→ 第二标签页显示「他处运行」。
 
 ---
 
@@ -426,7 +445,7 @@ ECDH 配对（密钥交换 + 面板侧加密），代价是配对流程复杂一
 
 | 阶段 | 内容 | 改服务端 | 依赖 | 完成后得到 |
 |---|---|---|---|---|
-| **P0** | 抽 `bot-core`、切 store.js、单实例锁 | ❌ | — | 一码两出口的能力 |
+| **P0** | 抽 `bot-core`、切 store.js（单实例锁移至 P1，见 §7.4 修正） | ❌ | — | 一码两出口的能力（含常驻 Node e2e 为证，见 §7.5） |
 | **P4** | 拟人 spike + transcript 格式 + few-shot + 长度 + 分段连发 + 读空气 + 睡眠 | ❌ | P0 | **当前每日体感痛点的解药**，浏览器同步受益 |
 | **P1** | `saigai-bot` CLI + 配置 + 热重载 + doctor + systemd | ❌ | P0 | PVE VM 今晚 24/7 常驻 |
 | **P2** | Docker/NAS + npm + 部署文档 | ❌ | P1 | "所有人都能自己部署"成立 |

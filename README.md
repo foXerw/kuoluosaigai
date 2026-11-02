@@ -23,6 +23,7 @@
 | 前端 | Vue 3 + Ant Design Vue（魔改主题）+ Vitest。自定义创意做英雄区，Ant Design 做结构化面板 |
 | 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库；唯一落盘是房间 ID 注册表 `server/data/rooms.log`（append-only），消息内容永不落盘 |
 | 传输 | WebSocket，JSON 文本帧 |
+| bot 核心包 | [`packages/bot-core`](packages/bot-core/)（`kuoluosaigai-bot-core`）：浏览器 BOT DECK 面板与未来 `saigai-bot` 常驻 daemon 共用的**宿主无关核心**——纯 ESM、零 Vue/DOM/localStorage，浏览器与 Node 两侧只是注入的宿主原语不同 |
 
 生产默认统一服务：一个 Node 进程同端口托管 `dist/` 静态与 WebSocket（见下方部署）。多房间协议与 P2P 记忆的现行权威文档：[`docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md`](docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md)；[`docs/chatroom-architecture.md`](docs/chatroom-architecture.md) 为 v2 时期的历史技术文档（含大量「为什么这么设计」的问答，但单房间设定已过时）。
 
@@ -42,7 +43,7 @@ echo "VUE_APP_WS_URL=ws://localhost:8081" > .env.local
 打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化；一边 `[+ NEW]` 建个私房、把 6 位 ID 粘给另一边加入，再切回公共房切回来——历史记录仍在（P2P 记忆）。
 
 ```bash
-npm test               # 前端 + 后端全量（现 361 个：jsdom 322 + node 39）
+npm test               # 前端 + 后端全量（现 386 个：客户端 347 + 服务端 39，含 2 个纯 Node e2e）
 npm run build          # 生产构建，产物在 dist/
 ```
 
@@ -51,6 +52,8 @@ npm run build          # 生产构建，产物在 dist/
 ## 部署（统一服务）
 
 整站可作为一个 Node Web 服务一键上线——前端静态 + WebSocket 同进程、同端口。适配 Render / Railway / Fly / VPS / Heroku 等能跑 Node 的平台。
+
+> **BOT DECK 抽包（P0）不改任何部署模型**：`packages/bot-core` 只是源码组织与依赖边界的重构，运行时不新增进程、不新增服务——部署仍是原来的三步 `npm install && npm run build && npm start`，core 随前端打进 `dist/`。
 
 | 命令 | 作用 |
 |---|---|
@@ -85,10 +88,12 @@ server/
 src/
   theme/channels.js       # 4 频道定义 + 抽签/重抽/公共房 ID 映射
   chat/                   # 多房间纯逻辑模块（无 Vue 依赖，独立可测）
-    historyMerge.js       # P2P 历史合并：多数派佐证/去重/截断
     roomCache.js          # 房间消息 LRU 缓存（20 房×500 条，纯内存）
     roomList.js           # 我的房间列表（localStorage 只存 ID，公共房不可删）
     rulesContent.js       # RULES 页文案（逐条对代码核真）
+  bots/                   # BOT DECK 浏览器适配层（逻辑主体在 packages/bot-core，本层只做宿主注入）
+    store.js              # 注入 vue reactive / localStorage / 跨标签租约 / 主人昵称，再导出 core 常量
+    lease.js              # 跨标签租约互斥（localStorage 心跳，浏览器专属，不进 core）
   composables/
     useTypewriter.js      # 打字机序列
     useChat.js            # WebSocket 传输 + 房间协议（join/create/切房/历史窗口/重连回房）
@@ -104,6 +109,18 @@ src/
   App.vue                 # 装配：抽频道/主题注入/相位切换/聊天室接入
 public/
   favicon.svg             # 终端风 K 字徽
+packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 saigai-bot daemon 共用的宿主无关核心
+                          #（type: module，纯 Node 可 import；Vue/DOM/localStorage 全由宿主注入，架构检查器钉死）
+  index.js                # 唯一公开面（显式具名导出，无 export *）
+  deck.js                 # createDeck：配置模型/持久化端口/runner 注册表/租约与闲置调度主体
+  runner.js               # 单 bot 编排器：入站帧处置 → 节奏决策 → LLM → 发送 → 记账上报
+  connection.js           # bot 独立 WS 连接：退避重连/自动回房，WebSocketImpl 注入点
+  rhythm.js               # 拟人节奏：概率分档/思考与打字延迟/对话预算/随机 AFK/闲置调度器
+  prompt.js               # 人格+房间上下文 → OpenAI chat/completions messages
+  llm.js                  # OpenAI 兼容客户端：原生 fetch + AbortController，错误分流
+  buffer.js               # 观战/上下文环形缓冲（浅拷贝读出，防污染）
+  historyMerge.js         # P2P 历史多数派合并（自 src/chat/ 随 core 搬入，见 spec §7.1）
+  timing.js              # HEARTBEAT_MS 全仓唯一权威定义
 ```
 
 设计文档见 `docs/superpowers/specs/`，实现计划见 `docs/superpowers/plans/`。

@@ -98,7 +98,7 @@ export function createNullLease() {
  *   now?: () => number,
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
- *     tabId?: string, sleep?: Function, WebSocketImpl?: Function,
+ *     sleep?: Function, WebSocketImpl?: Function,
  *   },
  * }} [opts] storage 必需：缺失 → TypeError（core 纯度红线，不静默摸浏览器全局）
  * @returns {object} 经 reactiveImpl 包装的 store（providers/bots/lifetime/storageDegraded/leaseDegraded + 方法）
