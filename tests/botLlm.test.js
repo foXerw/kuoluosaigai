@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { chatCompletion, LlmError } from '../src/bots/llm'
+import { chatCompletion, LlmError } from 'kuoluosaigai-bot-core'
 
 // Task 4 / spec §11「LlmClient」矩阵：成功解析 / auth 立停 / 429·5xx·timeout·network
 // 恰好重试一次 / bad-response 不重试 / usage 兜底 0 / B9 apiKey 零泄漏。

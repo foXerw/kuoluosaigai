@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createBotConnection, BOT_BACKOFF } from '../src/bots/connection'
+import { createBotConnection, BOT_BACKOFF } from 'kuoluosaigai-bot-core'
 
 // MockSocket 照抄 tests/useChat.test.js 顶部模式：instances 数组 + emit 助手。
 // 构造里 setTimeout(0) 延迟 open——配合 vi.useFakeTimers 时用

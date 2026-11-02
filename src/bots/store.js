@@ -19,9 +19,9 @@
 //    一次（trailing 合并，内存即时更新）。
 // B18：只 import vue/reactive 与 src/bots/{rhythm,lease,runner}；不碰 useChat/roomCache/roomList。
 import { reactive } from 'vue'
-import { createIdleScheduler } from './rhythm'
+import { createIdleScheduler } from 'kuoluosaigai-bot-core'
+import { createBotRunner } from 'kuoluosaigai-bot-core'
 import { createTabLease, HEARTBEAT_MS } from './lease'
-import { createBotRunner } from './runner'
 
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
 export const SCHEMA_VERSION = 1

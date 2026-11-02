@@ -99,7 +99,7 @@ describe('B18 src/bots/** 实际隔离状态', () => {
   }
 
   it('src/bots 下确实有 .js 文件被检查（防空跑）', () => {
-    expect(jsFiles(BOTS_DIR).length).toBeGreaterThanOrEqual(8)
+    expect(jsFiles(BOTS_DIR).length).toBeGreaterThanOrEqual(2)
   })
 
   it('每个 .js 文件都不 import useChat/roomCache/roomList/.vue/../composables', () => {

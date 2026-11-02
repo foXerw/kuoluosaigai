@@ -30,7 +30,7 @@ import { createRhythm, trailingFamilyStreak, RHYTHM_DEFAULTS } from './rhythm'
 import { buildSystemPrompt, buildMessages, clampText } from './prompt'
 import { chatCompletion, LlmError } from './llm'
 import { createBotConnection } from './connection'
-import { mergeHistory } from '../chat/historyMerge'
+import { mergeHistory } from '../../src/chat/historyMerge'
 
 const HISTORY_WINDOW_MS = 2000 // 与 useChat 同值：history-res 收集窗口
 const HISTORY_RES_MAX = 200 // B2：合并/应答上限

@@ -81,7 +81,7 @@
 // store 调用归 BotDeck（props 只有 {bot, providers}，不摸 store）。
 // 观战窗数据 = bot.bufferFrames()（store.getBuffer 的委托糖），rt.rev 是刷新信号；
 // B9：error 文案按 runner 契约永不含 key，卡片也只渲染 provider 的 name，不碰 apiKey。
-import { RHYTHM_DEFAULTS } from '../bots/rhythm'
+import { RHYTHM_DEFAULTS } from 'kuoluosaigai-bot-core'
 
 const RUNNING_STATUSES = ['connecting', 'open', 'cooling'] // 本 tab 在跑（error 不算）
 const STATUS_LABELS = {

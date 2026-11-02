@@ -4,7 +4,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import BotCard from '../src/components/BotCard.vue'
 import { createBotStore } from '../src/bots/store'
-import { RHYTHM_DEFAULTS } from '../src/bots/rhythm'
+import { RHYTHM_DEFAULTS } from 'kuoluosaigai-bot-core'
 
 function makeMemStorage(initial = {}) {
   const map = new Map(Object.entries(initial))

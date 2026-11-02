@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createBotRunner } from '../src/bots/runner'
-import { IDLE_KICK, MAX_TEXT } from '../src/bots/prompt'
+import { createBotRunner } from 'kuoluosaigai-bot-core'
+import { IDLE_KICK, MAX_TEXT } from 'kuoluosaigai-bot-core'
 
 // StubSocket：不自动 open 的 ws 替身（沿用 botConnection.test.js 模式）——runner 测试
 // 需要「何时算连上」完全由测试手动 open() 控制，配合 vi.useFakeTimers 驱动退避/窗口定时器。

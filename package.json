@@ -2,7 +2,7 @@
   "name": "kuoluosaigai",
   "version": "0.4.0",
   "private": true,
-  "workspaces": ["server"],
+  "workspaces": ["server", "packages/*"],
   "scripts": {
     "dev": "vue-cli-service serve",
     "serve": "vue-cli-service serve",

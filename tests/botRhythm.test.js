@@ -4,7 +4,7 @@ import {
   trailingFamilyStreak,
   createRhythm,
   createIdleScheduler,
-} from '../src/bots/rhythm'
+} from 'kuoluosaigai-bot-core'
 
 // RhythmEngine 测试（Task 2，spec §7 / 裁定 F1+F2）。
 // 确定性策略：注入「逐值弹出」的序列 rng——构造时消耗 1 个值（streakLimit 首掷），

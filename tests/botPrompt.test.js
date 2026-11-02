@@ -6,7 +6,7 @@ import {
   buildMessages,
   SYSTEM_TEMPLATE,
   IDLE_KICK,
-} from '../src/bots/prompt'
+} from 'kuoluosaigai-bot-core'
 
 // 消息帧形状（Task 2/3 合同）：{ type:'message', id, ts, roomId, nick, badge, text }
 const msg = (id, ts, nick = 'ANON-BBBB', badge = '', text = 'hi') => ({

@@ -6,7 +6,7 @@ import {
   MAX_BOTS,
   PROVIDER_PRESETS,
 } from '../src/bots/store'
-import { createIdleScheduler } from '../src/bots/rhythm'
+import { createIdleScheduler } from 'kuoluosaigai-bot-core'
 import { createTabLease, LEASE_KEY, HEARTBEAT_MS, STALE_MS } from '../src/bots/lease'
 
 // Task 8 / spec §11「botStore」矩阵 + Review Focus 3/5：持久化 roundtrip（B15）、

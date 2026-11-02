@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createContextBuffer } from '../src/bots/buffer'
+import { createContextBuffer } from 'kuoluosaigai-bot-core'
 
 // 消息帧形状（与服务器 message 帧一致）：{ id, ts, roomId, nick, badge, text }
 // ContextBuffer 将帧视为不透明对象原样存储，不做深拷贝。
