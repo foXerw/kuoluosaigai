@@ -8,7 +8,7 @@
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
     "start": "node server/start.js",
-    "lint": "vue-cli-service lint",
+    "lint": "vue-cli-service lint src tests packages",
     "test": "vitest run && npm run test --workspace kuoluosaigai-server",
     "test:watch": "vitest"
   },

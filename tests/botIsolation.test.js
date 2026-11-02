@@ -1,6 +1,6 @@
 // B18 静态依赖检查（spec「人机隔离」红线）——P0 搬家后的双作用域权威版：
 // 1) packages/bot-core/** 用 CORE_RULES（= 适配层规则 + 禁 vue + 禁 kuoluosaigai-bot-core
-//    自引用），再叠加纯度规则 findCorePurityViolations：localStorage / sessionStorage /
+//    自引用 + 禁 Node 内建模块 spec §7.4），再叠加纯度规则 findCorePurityViolations：localStorage / sessionStorage /
 //    document. / window. / 宿主昵称键一律违规——core 是叶子包，普通 Node 必须可直接 import。
 //    globalThis.WebSocket / globalThis.fetch 作为参数默认值是合法注入点，不是违规。
 // 2) src/bots/**（浏览器适配层）用 ADAPTER_RULES：允许 vue 与 kuoluosaigai-bot-core，
@@ -27,11 +27,20 @@ const ADAPTER_RULES = [
 ]
 
 // core 规则：适配层全部规则 + 禁 vue（叶子包不得拖入编译期依赖）
-// + 禁 kuoluosaigai-bot-core 自引用（core 内部只有相对路径；包名 import 是适配层的特权）。
+// + 禁 kuoluosaigai-bot-core 自引用（core 内部只有相对路径；包名 import 是适配层的特权）
+// + 禁 Node 内建（spec §7.4 红线）：node:fs 进 core，Node 环境的测试全绿也看不见——
+//   node:fs 在 Node 里真的能跑；只有 webpack 打前端 bundle 时才炸在构建上，而 P1 daemon
+//   作者（写 state.json sidecar 的第一冲动就是它）可能从不跑 build。
+//   `^node:` 前缀一条就覆盖全部现代内建形态（node:fs / node:fs/promises / node:crypto…）；
+//   另以精确匹配封死 4 个裸名 fs/path/os/child_process——裸形在 Node 照样解析、build 照样
+//   炸，且正是 daemon 起步最常用的四个；其余裸名（如裸 crypto）刻意不列：core 包零 npm
+//   依赖（package.json 无 dependencies），相对路径之外的裸 spec 本就无正当用途，但精确
+//   名单只钉「会被顺手写出来的那几个」，避免名单无限膨胀。
 const CORE_RULES = [
   ...ADAPTER_RULES,
   { label: 'vue', re: /\bvue\b/ },
   { label: 'kuoluosaigai-bot-core 自引用', re: /kuoluosaigai-bot-core/ },
+  { label: 'node builtin', re: /^(?:node:.+|(?:fs|path|os|child_process)(?:\/[\w.-]+)?)$/ },
 ]
 
 // 提取所有 import/require/re-export 的模块路径（语句级，不看注释里的裸词）：
@@ -254,6 +263,23 @@ describe('P0 分层规则', () => {
     expect(findIsolationViolations(src, CORE_RULES)).toContainEqual(
       expect.objectContaining({ label: 'kuoluosaigai-bot-core 自引用' }))
     expect(findIsolationViolations(src, ADAPTER_RULES)).toEqual([])
+  })
+
+  it('core 规则禁止 Node 内建（spec §7.4：node:fs 进 core 会让浏览器 build 炸、Node 测试全绿看不见）', () => {
+    for (const src of [
+      `import fs from 'node:fs'`,
+      `import { readFile } from 'node:fs/promises'`,
+      `import os from 'node:os'`,
+      `import { spawn } from 'child_process'`,
+      `const fs = require('fs')`,
+      `export { readFile } from 'node:fs'`, // re-export 通道同样封死
+    ]) {
+      expect(findIsolationViolations(src, CORE_RULES), src).toContainEqual(
+        expect.objectContaining({ label: 'node builtin' }))
+    }
+    // 不误伤：core 内部的相对路径与适配层的包名 import 都与本规则无关
+    expect(findIsolationViolations(`import { HEARTBEAT_MS } from './timing.js'`, CORE_RULES)).toEqual([])
+    expect(findIsolationViolations(`import fs from 'node:fs'`, ADAPTER_RULES)).toEqual([])
   })
 
   it('core 纯度：localStorage/sessionStorage/document./window. 一律违规', () => {

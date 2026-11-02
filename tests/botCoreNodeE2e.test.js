@@ -41,12 +41,14 @@ describe('bot-core 纯 Node 端到端（真 server + 原生 WebSocket）', () =>
   let server
   let url
   let tmpDir
+  let prevRoomsFile
   let botConn = null
   let observer = null
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuo-e2e-'))
     // 修正案 R15：走文档化环境变量把注册表指进临时目录（daemon 同款启动契约）
+    prevRoomsFile = process.env.KUO_ROOMS_FILE
     process.env.KUO_ROOMS_FILE = path.join(tmpDir, 'rooms.log')
     server = createServer()
     const port = await server.start(0) // 临时端口，避免与并行进程撞车
@@ -59,6 +61,9 @@ describe('bot-core 纯 Node 端到端（真 server + 原生 WebSocket）', () =>
     if (observer && observer.readyState <= 1) observer.close()
     await server.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
+    // 终审 M6：还原 KUO_ROOMS_FILE——同进程后续测试不得继承本用例的临时目录指向
+    if (prevRoomsFile === undefined) delete process.env.KUO_ROOMS_FILE
+    else process.env.KUO_ROOMS_FILE = prevRoomsFile
   })
 
   it('包公开面在纯 Node（非 jsdom）下可具名导入且常量完好', () => {

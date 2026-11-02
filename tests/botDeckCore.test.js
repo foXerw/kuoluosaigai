@@ -72,6 +72,32 @@ describe('createDeck（store 逻辑的宿主无关核心，Task 4）', () => {
     expect(typeof seen[0].startBot).toBe('function')
   })
 
+  // (b2) I2：reactive 接缝的包内唯一防线——方法的写入必须流经 reactiveImpl 的「返回值」。
+  // 浏览器注入的是 vue reactive 代理；若哪天有人把闭包改成写包装前的字面量（等价于
+  // `raw.bots.push`），浏览器 UI 会静默失去响应性，而 core 自己的套件（(b) 用恒等
+  // 实现）与 jsdom 组件测试都可能照样绿。本用例是包内、node 环境、零新依赖的钉死。
+  // 注意单层 Proxy 抓不到 `store.bots.push`——get 陷阱返回原始数组、push 不经代理，
+  // 所以 get 陷阱逐层包装嵌套对象/数组（逼近 vue 深 reactive 的可观察面），push 的
+  // 索引与 'length' 写才会落进 set 陷阱。基线差值断言：构造期 loadInto 可能已有写入，
+  // 本用例只关心 addBot 这一次调用引入的写。
+  it('addBot 的写入流经 reactiveImpl 返回的代理对象（不回写包装前字面量）', () => {
+    const sets = []
+    const wrap = (t) => new Proxy(t, {
+      get(o, k, r) {
+        const v = Reflect.get(o, k, r)
+        return v !== null && typeof v === 'object' ? wrap(v) : v
+      },
+      set(o, k, v) { sets.push(k); o[k] = v; return true },
+    })
+    const deck = createDeck({ storage: new Mapish(), reactiveImpl: wrap })
+    const baseline = sets.length
+    deck.addBot({ name: '小李' })
+    const introduced = sets.slice(baseline)
+    expect(introduced).toContain('0') // store.bots.push 的元素写经代理
+    expect(introduced).toContain('length') // 以及其后的 length 维护
+    expect(deck.bots.length).toBe(1) // 数据也确实落进了返回值
+  })
+
   // (c) null lease 下 startBot 直通，不置 otherTab
   it('null lease：startBot 成功、rt.otherTab 恒 false', async () => {
     const started = []

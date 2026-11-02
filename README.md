@@ -43,11 +43,12 @@ echo "VUE_APP_WS_URL=ws://localhost:8081" > .env.local
 打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化；一边 `[+ NEW]` 建个私房、把 6 位 ID 粘给另一边加入，再切回公共房切回来——历史记录仍在（P2P 记忆）。
 
 ```bash
-npm test               # 前端 + 后端全量（现 386 个：客户端 347 + 服务端 39，含 2 个纯 Node e2e）
+npm test               # 前端 + 后端全量（现 388 个：客户端 349 + 服务端 39，含 2 个纯 Node e2e）
 npm run build          # 生产构建，产物在 dist/
 ```
 
 > 根目录直接 `npm test` 会同时跑前端 + 后端（workspaces）。
+> `npm test` 的 Node 地板是 **≥ 22**：`tests/botCoreNodeE2e.test.js` 直接使用 Node 原生全局 `WebSocket`（本机 v24 实测；此前由 jsdom 代供，抽包后纯 Node e2e 不再享有——这正是 P1 daemon 的处境）。未加 `engines` 字段，此约束以文档为准。
 
 ## 部署（统一服务）
 
@@ -120,7 +121,7 @@ packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 sai
   llm.js                  # OpenAI 兼容客户端：原生 fetch + AbortController，错误分流
   buffer.js               # 观战/上下文环形缓冲（浅拷贝读出，防污染）
   historyMerge.js         # P2P 历史多数派合并（自 src/chat/ 随 core 搬入，见 spec §7.1）
-  timing.js              # HEARTBEAT_MS 全仓唯一权威定义
+  timing.js              # bot tick / 跨标签租约心跳的 HEARTBEAT_MS 唯一权威定义（`server/index.js` 同名常量属 WS keepalive 域、值 30000，勿混）
 ```
 
 设计文档见 `docs/superpowers/specs/`，实现计划见 `docs/superpowers/plans/`。

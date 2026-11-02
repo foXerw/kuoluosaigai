@@ -164,6 +164,8 @@ createDeck({
 })
 ```
 
+> 本节为初稿，注入面清单已被 P0 实际落地取代：权威签名见 §16.5 Q7 的 `createDeck({storage, lease, reactiveImpl, getOwnerNick, wsUrl, rng, now, deps})`（`randomId`/`logger` 不存在，`WebSocketImpl`/`fetchImpl` 归 deps/连接层端口），小标题的"一次定形"据此读作历史表述。
+
 ### 7.4 daemon 的单实例锁（A5 的对偶实现）
 
 浏览器用 `lease.js` 做跨标签互斥；daemon 的等价物是**进程级互斥**：
