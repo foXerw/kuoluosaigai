@@ -12,7 +12,7 @@
 import { useTypewriter } from '../composables/useTypewriter'
 
 const SEQUENCE = [
-  '[BOOT] kuoluosaigai channel daemon v0.1',
+  '[BOOT] kuoluosaigai channel daemon v0.4',
   '[OK] handshake',
   '[FREQ] tuning...',
   '[READY] press ENTER to join.',
