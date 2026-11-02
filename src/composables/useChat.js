@@ -1,5 +1,5 @@
 import { ref, computed, onBeforeUnmount } from 'vue'
-import { mergeHistory } from '../chat/historyMerge'
+import { mergeHistory } from 'kuoluosaigai-bot-core'
 import { createRoomCache } from '../chat/roomCache'
 import { loadRooms, addRoom, removeRoom as removeStoredRoom } from '../chat/roomList'
 

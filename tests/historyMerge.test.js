@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeHistory } from '../src/chat/historyMerge'
+import { mergeHistory } from 'kuoluosaigai-bot-core'
 
 // 消息帧形状（Task 2/3 合同）：{ id, ts, roomId, nick, badge, text }
 function msg(id, ts, extra = {}) {
@@ -137,5 +137,21 @@ describe('mergeHistory', () => {
     const responses = [{ messages: [msg('r1', 1), msg('r2', 2)] }]
     const out = mergeHistory([], responses)
     expect(ids(out)).toEqual(['r1', 'r2'])
+  })
+})
+
+import fs from 'node:fs'
+import path from 'node:path'
+
+describe('P0 搬包：跨侧可达性（Review Focus 5）', () => {
+  it('core 包出口提供 mergeHistory', async () => {
+    const core = await import('kuoluosaigai-bot-core')
+    expect(typeof core.mergeHistory).toBe('function')
+  })
+
+  // 单一实现的保证走文件系统，不依赖打包器的模块实例同一性（R2）：
+  // 老路径一旦消失，就不可能存在"src 侧还有一份在跑"的分叉。
+  it('src/chat/historyMerge.js 已不存在（杜绝两份实现漂移，spec A8）', () => {
+    expect(fs.existsSync(path.resolve(process.cwd(), 'src/chat/historyMerge.js'))).toBe(false)
   })
 })

@@ -6,3 +6,4 @@ export { buildSystemPrompt, buildMessages, clampText, MAX_TEXT, IDLE_KICK, SYSTE
 export { chatCompletion, LlmError } from './llm.js'
 export { createBotConnection, BOT_BACKOFF } from './connection.js'
 export { createBotRunner } from './runner.js'
+export { mergeHistory } from './historyMerge.js'

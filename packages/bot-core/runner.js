@@ -25,12 +25,12 @@
 //   连接态，joined 回执清 rateStreak/冷却显示、rhythm 实例原样保留（预算/间隔连续）。
 // B18：不 import useChat/roomCache/roomList；唯一跨界依赖 mergeHistory（spec B2 明示允许）。
 
-import { createContextBuffer } from './buffer'
-import { createRhythm, trailingFamilyStreak, RHYTHM_DEFAULTS } from './rhythm'
-import { buildSystemPrompt, buildMessages, clampText } from './prompt'
-import { chatCompletion, LlmError } from './llm'
-import { createBotConnection } from './connection'
-import { mergeHistory } from '../../src/chat/historyMerge'
+import { createContextBuffer } from './buffer.js'
+import { createRhythm, trailingFamilyStreak, RHYTHM_DEFAULTS } from './rhythm.js'
+import { buildSystemPrompt, buildMessages, clampText } from './prompt.js'
+import { chatCompletion, LlmError } from './llm.js'
+import { createBotConnection } from './connection.js'
+import { mergeHistory } from './historyMerge.js'
 
 const HISTORY_WINDOW_MS = 2000 // 与 useChat 同值：history-res 收集窗口
 const HISTORY_RES_MAX = 200 // B2：合并/应答上限
