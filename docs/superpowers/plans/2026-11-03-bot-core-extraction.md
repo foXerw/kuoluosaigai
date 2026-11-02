@@ -15,7 +15,8 @@
 ## Global Constraints
 
 - 零新增运行时依赖（`bot-core` 与 `src/` 均不得引入新 npm 包；`ws` 只在 P1 的 daemon 包出现）
-- 测试基线 **361（322 客户端 + 39 服务端）**，**只增不减**；`bot-core` 的既有单测一律原样通过，**禁止为了通过而改断言**
+- 测试基线 **362（323 客户端 + 39 服务端）**，**只增不减**；既有单测的**断言与用例一律不得改动**（import 路径行随搬包调整除外，见 R1）；**禁止为了通过而改断言**
+- **R1（预扫描裁定）**：`tests/botStore.test.js` 锚定的是"**断言零改动**"，不是"字节零改动"——它 `:9` import 了会被搬走的 `../src/bots/rhythm`，路径行必须随搬包改。留转发 shim 让路径不动是**更坏**的选择（第二个入口 = spec A8 core 分叉）。补偿证据：`git diff` 里该文件的改动**只允许出现在 import 块内**
 - 每个任务收尾**必须同时跑** `npm test` **和** `npm run build`（上一轮 eslint `no-undef` 让 vitest 全绿而构建炸机的教训，spec A9）
 - 持久化载荷格式**零迁移**：键 `kuoluosaigai:bots:v1`、`{version:1, providers, bots(剥 rt), lifetime}` 结构一字不改
 - 沿用协议护栏：发言 ≤10 条/分/连接、单条 ≤280 字、房间 ≤100 人、history-res ≤200 条（本阶段不改协议）
@@ -51,17 +52,18 @@ packages/bot-core/
   connection.js         ← git mv src/bots/connection.js      薄 WS 层，零改动
   runner.js             ← git mv src/bots/runner.js          单 bot 编排，仅改 1 行 import
   historyMerge.js       ← git mv src/chat/historyMerge.js    P2 依赖，零改动（见 §核心洞察 2）
+  timing.js             ← 新，HEARTBEAT_MS 单点定义（R3）
   deck.js               ← 新，store.js 的全部编排逻辑搬进来 + 3 端口参数化
 src/
   bots/store.js         退化为浏览器适配层：注入 reactive/lease/getOwnerNick + 再导出常量
-  bots/lease.js         留在浏览器侧（localStorage 跨标签互斥，daemon 不需要）
+  bots/lease.js         留在浏览器侧（localStorage 跨标签互斥，daemon 不需要）；HEARTBEAT_MS 改为从 core 再导出
   chat/                 historyMerge.js 被搬走，其余（roomCache/roomList/rulesContent）不动
   composables/useChat.js   改 1 行 import
   components/BotDeck.vue   不改（常量经 store.js 再导出）
 tests/
   historyMerge.test.js / botBuffer.test.js / botRhythm.test.js / botPrompt.test.js
   botLlm.test.js / botConnection.test.js / botRunner.test.js   各改 1 行 import 路径
-  botStore.test.js                                             **一字不改**（回归证据）
+  botStore.test.js                          断言禁止改动、仅 :9 import 路径随搬包（R1）——回归证据
   botIsolation.test.js                                         改造成双作用域检查器
   botDeckCore.test.js                                          新增，node 环境
 ```
@@ -78,7 +80,8 @@ tests/
 - Modify: `packages/bot-core/runner.js:33`（唯一一处 import 改写）
 - Modify: `src/bots/store.js:22-24`
 - Modify: `tests/{botBuffer,botRhythm,botPrompt,botLlm,botConnection,botRunner}.test.js` 各自 import 行
-- Test: 无新增断言——**本任务的测试就是既有 361 个用例必须一字不改地全绿**
+- Modify: `tests/botStore.test.js:9`（**仅此一行**，`createIdleScheduler` 的来源路径；R1）
+- Test: 无新增断言——**本任务的测试就是既有 362 个用例必须全绿，且断言零改动**
 
 **Interfaces:**
 - Consumes: 无
@@ -133,7 +136,8 @@ import { createBotRunner } from 'kuoluosaigai-bot-core'
 import { createTabLease, HEARTBEAT_MS } from './lease'
 ```
 
-`tests/` 六个文件：`../src/bots/<mod>` → `kuoluosaigai-bot-core`（用 `grep -rl "src/bots/" tests/` 找全，逐个改，勿 sed 批量——`tests/botStore.test.js` 和 `tests/App.test.js` 里 `src/bots/store` 的引用**必须保持**，它们是适配层的合法消费方）。
+`tests/` 七个文件：`../src/bots/<mod>` → `kuoluosaigai-bot-core`（用 `grep -rl "src/bots/" tests/` 找全，逐个改，勿 sed 批量——`tests/botStore.test.js` 和 `tests/App.test.js` 里 `src/bots/store` 的引用**必须保持**，它们是适配层的合法消费方）。
+其中 `tests/botStore.test.js` **只改 `:9` 一行**（`createIdleScheduler` 的来源），`:10` 那行 `createTabLease, LEASE_KEY, HEARTBEAT_MS, STALE_MS from '../src/bots/lease'` 不动（`lease.js` 留在原处），其余一律不动（R1）。
 
 - [ ] **Step 6: 装 workspace 链接**
 
@@ -146,7 +150,7 @@ Expected: 无 EALLOWREMOTE / registry 报错（服务器与本机的 lockfile �
 - [ ] **Step 7: 验证**
 
 ```bash
-npm test          # Expected: 361 全绿，用例数不变
+npm test          # Expected: 362 全绿，用例数不变，断言零改动
 npm run build     # Expected: 编译成功，dist/ 产出
 node --input-type=module -e "import('kuoluosaigai-bot-core').then(m => console.log(Object.keys(m).length))"
 ```
@@ -180,20 +184,19 @@ git commit -m "refactor(bots): 抽 packages/bot-core 工作区包，搬 6 个纯
 在 `tests/historyMerge.test.js` 末尾追加（保持原文件其余内容一字不改）：
 
 ```js
+import fs from 'node:fs'
+import path from 'node:path'
+
 describe('P0 搬包：跨侧可达性（Review Focus 5）', () => {
-  it('人类侧与 bot 侧从同一包出口拿到同一个函数引用', async () => {
+  it('core 包出口提供 mergeHistory', async () => {
     const core = await import('kuoluosaigai-bot-core')
-    const { mergeHistory: viaPackage } = core
-    const { mergeHistory: viaPath } = await import('../packages/bot-core/historyMerge.js')
-    expect(typeof viaPackage).toBe('function')
-    expect(viaPackage).toBe(viaPath)              // 单一实现，未出现 core 分叉（spec A8）
-    expect(core.mergeHistory).toBe(viaPackage)    // barrel 确实导出
+    expect(typeof core.mergeHistory).toBe('function')
   })
 
-  it('src/chat 下不再有 historyMerge.js（避免两份实现漂移）', async () => {
-    let existed = true
-    try { await import('../src/chat/historyMerge.js') } catch { existed = false }
-    expect(existed).toBe(false)
+  // 单一实现的保证走文件系统，不依赖打包器的模块实例同一性（R2）：
+  // 老路径一旦消失，就不可能存在"src 侧还有一份在跑"的分叉。
+  it('src/chat/historyMerge.js 已不存在（杜绝两份实现漂移，spec A8）', () => {
+    expect(fs.existsSync(path.resolve(process.cwd(), 'src/chat/historyMerge.js'))).toBe(false)
   })
 })
 ```
@@ -243,13 +246,19 @@ git add -A && git commit -m "refactor(bots): historyMerge 入 core，Node 侧解
 ## Task 3: `lease` 端口 + `createNullLease`
 
 **Files:**
+- Create: `packages/bot-core/timing.js`（`HEARTBEAT_MS` 单点定义，R3）
 - Create: `packages/bot-core/deck.js`（本任务只放 `createNullLease` 与契约注释，Task 4 才装主体）
 - Modify: `packages/bot-core/index.js`
+- Modify: `src/bots/lease.js:14`（改为从 core 再导出 `HEARTBEAT_MS`，自身不再定义）
 - Test: `tests/botDeckCore.test.js`（新建，文件头写 `// @vitest-environment node`）
 
 **Interfaces:**
 - Consumes: 无
 - Produces:
+  ```js
+  // packages/bot-core/timing.js
+  export const HEARTBEAT_MS = 15000   // 全局 tick 与租约心跳的共用权威周期（终审 M4）
+  ```
   ```js
   createNullLease(): {
     acquire: (botId: string) => Promise<true>,
@@ -309,10 +318,15 @@ npx vitest run tests/botDeckCore.test.js
 ```
 Expected: FAIL —— `createNullLease is not exported from 'kuoluosaigai-bot-core'`
 
-- [ ] **Step 3: 实现 `createNullLease`**
+- [ ] **Step 3: 实现 `createNullLease` 与 `timing.js`**
 
-放进 `packages/bot-core/deck.js` 并从 barrel 导出。实现约 10 行；`degraded` 用**值**而非 getter 也行，
+`createNullLease` 放进 `packages/bot-core/deck.js` 并从 barrel 导出。实现约 10 行；`degraded` 用**值**而非 getter 也行，
 但 `deck.js` 里读的是 `lease.degraded`，两种都兼容。
+
+同一步把 `HEARTBEAT_MS` 单点化（R3）：新建 `packages/bot-core/timing.js` 定义 `export const HEARTBEAT_MS = 15000`，
+`src/bots/lease.js:14` 的 `export const HEARTBEAT_MS = 15000` 换成
+`export { HEARTBEAT_MS } from 'kuoluosaigai-bot-core'`（值一字不改，`tests/botLease.test.js:32` 的 `toBe(15000)` 必须仍然绿——
+它就是"没有把常量抄成两份"的证据）。`STALE_MS` 是租约私有语义，**留在 `lease.js` 不动**。
 
 - [ ] **Step 4: 跑到通过 + 收尾**
 
@@ -330,7 +344,7 @@ git add -A && git commit -m "feat(bots): core 增 lease 端口与 createNullLeas
 - Modify: `packages/bot-core/deck.js`（承接 `store.js:62-652` 的全部逻辑主体）
 - Modify: `packages/bot-core/index.js`
 - Modify: `src/bots/store.js`（重写成约 30 行适配层）
-- Test: `tests/botDeckCore.test.js` 追加用例；`tests/botStore.test.js` **禁止修改**，它是指纹级回归证据
+- Test: `tests/botDeckCore.test.js` 追加用例；`tests/botStore.test.js` **断言禁止修改**（R1），它是指纹级回归证据
 
 **Interfaces:**
 - Consumes: `createNullLease`（Task 3）
@@ -389,6 +403,7 @@ it('null lease：startBot 成功、rt.otherTab 恒 false', async () => {
   expect(await deck.startBot('bot-0')).toBe(true)
   expect(started).toEqual(['bot-0'])
   expect(deck.bots[0].rt.otherTab).toBe(false)
+  deck.dispose()   // startBot 会 ensureTick() 起 setInterval；node 环境不留活句柄（R4）
 })
 
 // (d) storage 缺失明确报错，别静默用 globalThis.localStorage
@@ -415,7 +430,7 @@ Expected: FAIL —— `createDeck is not exported`
 | 原 | 改后 |
 |---|---|
 | `import { reactive } from 'vue'` | 删；改用参数 `reactiveImpl`，`const store = reactiveImpl({...})` |
-| `import { createTabLease, HEARTBEAT_MS } from './lease'` | `HEARTBEAT_MS` 从 core 内的常量拿：把 `src/bots/lease.js` 的 `export const HEARTBEAT_MS = 15000` **值原样**写进 `deck.js`（并加注释指向 spec §7 权威常量），或——**推荐**——`lease.js` 不动、`deck.js` 里 `const TICK_MS = 15000`；两处常量同源由 Task 5 的检查器保证 |
+| `import { createTabLease, HEARTBEAT_MS } from './lease'` | `createTabLease` **整条删除**（租约改由 `opts.lease` 注入，见下一行）；`HEARTBEAT_MS` 改为 `import { HEARTBEAT_MS } from './timing'`（Task 3 R3 已单点化）。**不得**在 `deck.js` 里另立 `TICK_MS = 15000`——那会把终审 M4 修掉的"两个 15000 巧合同值"重新请回来 |
 | `const lease = createLease({storage, tabId, now, sleep})` | `const lease = opts.lease`（**不再在 core 里造租约**） |
 | `storage = globalThis.localStorage` 等默认值 | 参数化，`storage` 缺失即 `throw new TypeError('deck: storage required')` |
 | `getOwnerNick()` 读 `ss.getItem('kuoluosaigai:nick')` | `getOwnerNick = () => null` 参数，函数体搬适配层 |
@@ -450,7 +465,7 @@ Expected: PASS 全部（含新增 4 条）
 - [ ] **Step 5: 回归证据 —— 未改动的旧测试**
 
 ```bash
-git diff --stat tests/botStore.test.js   # Expected: 空（此文件必须一字未改）
+git diff main -- tests/botStore.test.js   # Expected: 只有 Task 1 那行 `:9` import 路径；断言/用例区零 diff（R1）
 npx vitest run tests/botStore.test.js tests/BotDeck.test.js tests/BotCard.test.js tests/App.test.js
 ```
 Expected: 全绿。`botStore.test.js` 里的假 `deps.createLease` 用例如果挂了，几乎一定是
@@ -510,7 +525,7 @@ describe('P0 分层规则', () => {
 
 describe('实际扫描（反空跑，Review Focus 4）', () => {
   it('packages/bot-core 与 src/bots 都确实扫到文件，且数量下限达标', () => {
-    expect(jsFiles(CORE_DIR).length).toBeGreaterThanOrEqual(9)  // 8 模块 + index.js
+    expect(jsFiles(CORE_DIR).length).toBeGreaterThanOrEqual(11)  // 8 模块 + index + deck + timing（R5）
     expect(jsFiles(SRC_BOTS_DIR).length).toBeGreaterThanOrEqual(2)  // store.js + lease.js
   })
 
@@ -591,7 +606,7 @@ Expected: ≥1（core 确实进了 bundle）
 - [ ] **Step 3: 更新 README**
 
 技术栈表下加一行说明 `packages/bot-core` 的定位（浏览器面板与 `saigai-bot` daemon 共用的宿主无关核心）；
-项目结构块补 `packages/bot-core/` 条目；`npm test` 那句的用例数按实际输出改（≥361）。
+项目结构块补 `packages/bot-core/` 条目；`npm test` 那句的用例数按实际输出改（≥362）。
 README 里"部署模型不变"这句话仍然成立——P0 不产生新的部署形态，明写出来免得读者误会。
 
 - [ ] **Step 4: 修 spec §7**
@@ -621,7 +636,7 @@ git add -A && git commit -m "docs(p0): bot-core 抽包验收——README/spec �
 
 1. `packages/bot-core` 是独立 workspace 包、`type: module`，**纯 Node 下可 import 且无 SyntaxError**（Task 2 Step 5）
 2. core 内**零** Vue / DOM / `localStorage` 依赖，由自动化检查器钉住（Task 5）
-3. `tests/botStore.test.js` 一字未改仍然全绿 —— 浏览器行为未回归的最强证据（Task 4 Step 5）
+3. `tests/botStore.test.js` **断言零改动**仍然全绿（仅 `:9` import 路径随搬包变更，R1）—— 浏览器行为未回归的最强证据（Task 4 Step 5）
 4. 组件层 `BotDeck.vue` / `BotCard.vue` / `App.vue` **零改动**（常量经适配层再导出）
-5. 测试总数 ≥361 且 `npm test` / `npm run build` / `npm run lint` 三绿（Task 6 Step 5）
+5. 测试总数 ≥362 且 `npm test` / `npm run build` / `npm run lint` 三绿（Task 6 Step 5）
 6. P1 daemon 需要的注入面已就位：`createDeck({storage, lease, reactiveImpl, getOwnerNick, wsUrl, deps})`
