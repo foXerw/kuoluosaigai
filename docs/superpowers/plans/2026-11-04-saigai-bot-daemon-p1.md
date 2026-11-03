@@ -27,6 +27,26 @@
 - **`id` 必填且稳定**（Q3）：`[a-z0-9-]{1,32}`，`doctor` 校验唯一；改名=变更、只有 `id` 增删才是增删。
 - **lint 兼容**：`packages/` 在 eslint 覆盖范围内（`lint` = `vue-cli-service lint src tests packages`），故 daemon 代码**不得使用顶层 await**、不得使用 `??=`/`||=` 等新赋值语法；入口一律 `async function main()` + `.then/.catch`。
 
+## 共享 fixture（裁定 R6：Task 4 与 Task 13 双向钉形状，禁止跨边 import）
+
+`config.js` 含 `node:` 内建，`src/bots/export.js` 属浏览器侧 —— **两侧不得互相 import**
+（jsdom 里 import `node:fs` 会炸，daemon 测试里 import 带 vue 的代码同样炸）。形状漂移靠
+**同一段文本**在两侧各自断言来防：以下这段是权威样例，Task 4 的 `config.test.js` 断言
+`validateConfig` 接受它、Task 13 的 `botExport.test.js` 断言 `buildConfigFile` 产出的字符串
+与之同形（用 `new Function` 解析比对，不 import 对方模块）：
+
+```js
+export default {
+  name: 'lab-vm',
+  serverUrl: 'wss://kuoluosaigai.com',
+  provider: { baseUrl: 'https://api.deepseek.com/v1', apiKey: process.env.KUO_LLM_KEY, model: 'deepseek-chat' },
+  limits: { globalHourlyMessages: 120, quietHours: { from: '01:30', to: '08:00' } },
+  bots: [
+    { id: 'lixiao', name: '小李', persona: '大三学生，说话短', room: 'nebula', chattiness: 70, temperature: 1.1, hourlyBudget: 20 },
+  ],
+}
+```
+
 ## Review Focus
 
 spec 未写成测试、但最可能咬到使用者的一类输入。每行在 owning task 里钉一条测试：
@@ -82,7 +102,7 @@ git commit -m "feat(core): onEvent 增 error/warn 观测端口并转发宿主（
 **Interfaces:**
 - Consumes: `RHYTHM_DEFAULTS.hourlyCap = 30`（`rhythm.js:27`，不改值）
 - Produces:
-  - `packages/bot-core/schedule.js`：`parseClock('01:30') -> {h, m}`（非法 → `null`）、`inQuietWindow(ts, {from, to}) -> boolean`（按**本机墙钟**，跨零点窗口正确；`from === to` 视为全时段静默）、`createGate({ now, quietHours, startupQuietMs, startedAt, hourAccountor }) -> { quietNow(): boolean, allowSpeak(mentions: boolean): boolean }`
+  - `packages/bot-core/schedule.js`：`parseClock('01:30') -> {h, m}`（非法 → `null`）、`inQuietWindow(ts, {from, to}) -> boolean`（按**本机墙钟**，跨零点窗口正确；`from === to` 视为全时段静默）、`createGate({ now, quietHours, startupQuietMs, startedAt, hourAccountor? }) -> { quietNow(): boolean, allowSpeak(mentions: boolean): boolean }`（**`hourAccountor` 可选**：本任务先不生产它，缺省即"不做全局拦截"，Task 3 才造并接入 —— 预扫描裁定 R1，避免 T2 反向依赖 T3）
   - `createDeck({ ..., schedule?: { quietHours?: {from: string, to: string}, globalHourlyMessages?: number, startupQuietMs?: number } })`
   - `createBotRunner({ ..., gate?: { allowSpeak(mentions: boolean): boolean } })`；`gate` 缺省 → 现状行为
 
@@ -152,8 +172,11 @@ it('globalHourlyMessages 未配置 → 闸恒可发（浏览器零变化）')
   - 校验红线：顶层必须是纯数据 default export；值允许 `process.env.X`；**函数 / symbol / 类实例 / 未知键 / `bots[].id` 重复或不合 `[a-z0-9-]{1,32}` / `room` 非 6 位 `[a-z0-9]` 或不在白名单公共房形态 / `bots.length > MAX_BOTS`** → errors
   - `errors[]` 每条以字段路径开头（`bots[2].id: ...`），供 `doctor` 直接打印
 
-- [ ] **Step 1: 建包与测试工程** — `packages/bot-daemon/package.json`：`{ "name": "kuoluosaigai-bot-daemon", "type": "module", "version": "0.1.0", "private": true, "engines": { "node": ">=22" }, "bin": { "saigai-bot": "./bin/saigai-bot.js" }, "scripts": { "test": "vitest run" }, "dependencies": { "kuoluosaigai-bot-core": "*" } }`；`vitest.config.js` 内 `test: { environment: 'node', include: ['tests/**/*.test.js'] }`。
+- [ ] **Step 1: 建包与测试工程** — **建完 package.json 立刻在仓根跑 `npm install`**，并断言 `node_modules/kuoluosaigai-bot-core` 这个 workspace symlink 出现（裁定 R3：新 workspace 包不重装 → `Cannot find module`，会被误读成自己的代码写错）。`packages/bot-daemon/package.json`：`{ "name": "kuoluosaigai-bot-daemon", "type": "module", "version": "0.1.0", "private": true, "engines": { "node": ">=22" }, "bin": { "saigai-bot": "./bin/saigai-bot.js" }, "scripts": { "test": "vitest run" }, "dependencies": { "kuoluosaigai-bot-core": "*" } }`；`vitest.config.js` 内 `test: { environment: 'node', include: ['tests/**/*.test.js'] }`。
 - [ ] **Step 2: 改根接线（这是"假绿"陷阱，必须同批改）** — 根 `test` 脚本尾部追加 `&& npm run test --workspace kuoluosaigai-bot-daemon`；根 `vitest.config.js` 的 `exclude` 追加 `'packages/bot-daemon/**'`。**理由**：根工程是 `environment: 'jsdom'`，不收这条就出现"同一套测试跑两遍"的双收集（今天在主检出实测过的 737/30 假失败正是这个形状）。
+  **本步不要跑全量 `npm test`**（裁定 R2）：此刻 daemon 还没有测试文件，`vitest run` 会因
+  "No test files found" 退非零 —— 那是**顺序**造成的空工程失败，不是回归。只跑
+  `npm run test --workspace kuoluosaigai-bot-daemon` 之外的验证留到 Step 4（测试已存在）之后。
 - [ ] **Step 3: 写失败测试**（`tests/config.test.js`）
 
 ```js
@@ -378,7 +401,7 @@ it('日志一行一条合法 JSON，且不含 "Authorization"')
 ### Task 12: systemd unit 与运行语义文档（§8.4/§8.5）
 
 **Files:**
-- Create: `packages/bot-daemon/deploy/saigai-bot.service`、`packages/bot-daemon/deploy/README.md`
+- Create: `packages/bot-daemon/deploy/saigai-bot.service`、`packages/bot-daemon/deploy/README.md`、`packages/bot-daemon/tests/deploy.test.js`
 - Modify: `packages/bot-daemon/package.json`（`files` 字段含 `deploy/`，防 npm 发包漏 unit）
 
 **Interfaces:**
@@ -406,7 +429,7 @@ it('日志一行一条合法 JSON，且不含 "Authorization"')
 
 ```js
 it('导出的字符串里不含任何 apiKey 明文，含 "process.env.KUO_LLM_KEY"')
-it('导出物用 dynamic import 能被解析且 validateConfig 判定结构一致（同形往返，防两边漂移）')
+it('导出物与计划"共享 fixture"那段**同形**（用 new Function 解析比对字段集合；不得 import daemon 的 config.js，裁定 R6）')
 it('多 provider → 取 bot 实际引用的那个；未引用的 provider 不进导出物')
 it('persona 含反引号/${} 的文案 → 转义安全，不破坏模板字符串')
 it('bots[].id 缺失（浏览器自造 bot-0）→ 导出时补一个合 [a-z0-9-]{1,32} 的稳定 slug')
