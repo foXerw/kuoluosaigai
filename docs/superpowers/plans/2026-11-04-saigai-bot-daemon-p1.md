@@ -195,6 +195,21 @@ it('serverUrl 缺省回填 `wss://kuoluosaigai.com`（§5）；显式 `ws://loca
 it('loadConfig 拒绝函数值：配置文件导出 { bots: () => [] } → errors 含 "必须是纯数据"')
 ```
 
+> **裁定 R16（Task 4 审查轮暴露，是计划缺陷不是代码缺陷）**：上面第一条测试名把 `50 / 0.9`
+> **写死成字面量**，而 core 从没导出这两个默认（`deck.js` 的 `normalizeCfg` 用
+> `Number.isFinite(x) ? x : 50` 式参数兜底）。真实的分叉链：daemon 把 `chattiness: 50` 回填进 cfg →
+> Task 7 传给 `addBot` → `deck.js` 见到**显式有限值**就不再套用自家默认 → 日后 core 默认若改成 60，
+> 浏览器 bot 跑 60、daemon bot **静默跑 50**，正面撞 spec **G2**（拟人参数只有一份权威实现）与 **A8**，
+> 形状与上一轮终审 **M4**（两个巧合等值的 15000）同型。
+> **修法（定案）**：core 在 `deck.js` 导出 `DEFAULT_CHATTINESS` / `DEFAULT_TEMPERATURE`，
+> `normalizeCfg` 自己改用它们（不再写字面量），`index.js` 一并导出；daemon 的 `config.js` **import**
+> 这两个常量做回填，测试断言改为对照 import 进来的值——于是"缺省字段回填（50/0.9）"这条测试名
+> **由构造保证为真**，不再靠注释同步。
+> **别顺手过度合并**：`rhythm.js` 与 `llm.js` 各有一个同值参数默认，但是否属"bot 人格参数"这**同一个域**
+> 需核实——本仓已有明确反例：`timing.js` 头注释专门写明服务端 `HEARTBEAT_MS=30000`（WS keepalive）
+> 与客户端 `15000`（tick/心跳）是**两个域、不是重复**。同名同值 ≠ 同语义；确认同域才合并，
+> 否则各留各的并写明理由。
+
 - [ ] **Step 4: 跑测试确认失败** — Run: `npm run test --workspace kuoluosaigai-bot-daemon` Expected: FAIL
 - [ ] **Step 5: 实现 `config.js`** — 纯数据判定用递归 `typeof` 扫描（函数/symbol/`__proto__` 键一律拒）；`MAX_BOTS` 从 core 再导出（`import { MAX_BOTS } from 'kuoluosaigai-bot-core'`），**不得**在 daemon 里抄第二份常量（R3 同族教训）。
 - [ ] **Step 6: 跑测试确认通过 + 三道门 + 提交** — commit `feat(daemon): 包骨架 + ESM 配置 loader 与纯数据校验（Q1 单房/Q3 id 必填）`
