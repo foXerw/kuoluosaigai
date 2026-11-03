@@ -202,6 +202,17 @@ it('globalHourlyMessages 未配置 → 闸恒可发（浏览器零变化）')
   ②配了 20 的 bot 在第 21 条时被 `hourlyCap` 拦（沿用 rhythm 现有"超限只回 mentions"语义）；
   ③`persist` 往返：带 `hourlyBudget` 的 bot `load()` 后仍在，且**老载荷缺该键**时读回来是"未设"
   （不是 0——0 的含义是"一条都不发"，两者必须可区分）；④全局闸与 per-bot cap 同时在场的优先级用例。
+  - **裁定 R25（Task 3b 审查轮对我这条 Step 1-① 的修正）**：①里"用 spy 断言 `createRhythm` 入参形状"
+    **是我写计划时没验证过的可行性假设**——`runner.js` 静态 `import './rhythm.js'`，而 core 的
+    `package.json` exports 只开 `"."`，走包名子路径 mock 不通（相对路径 `vi.mock` 那条路**未必**不通，
+    审查者明说它没能证明，因为要写临时测试文件、且本仓零 `vi.mock` 先例）。
+    实现体改用的替代方案经审查**逐Variant手工验证为等价甚至更强**：block 边界精确
+    （第 N 条发、第 N+1 条挡）唯一确定 `hourlyCap ∈ {20,30,0}`，两种错参形状
+    （`null`→从第 1 条就挡；`undefined`→31 条仍不挡）都会打红具体用例；
+    deck 接缝断言用的是真生产端口 `deps.createRunner` 与真 `pick` 输出，不是 mock 记账。
+    唯一未钉住的是"未配时 `params` 键缺席"这一**形状恒等**，而行为等价的写法
+    （`hourlyCap: bot.hourlyBudget ?? 30`）无后果。**故本步以"行为三态 + deck 接缝快照"为准**；
+    若将来确实要钉形状，去做相对路径 `vi.mock` 探针，别再假定包名子路径可行。
 - [ ] **Step 2: 跑测试确认失败**（`npx vitest run tests/botRunner.test.js tests/botDeckCore.test.js`）
 - [ ] **Step 3: 实现透传**（改动限于上述四处；不动 `RHYTHM_DEFAULTS` 的 30 默认值）
 - [ ] **Step 4: 三道门全绿** — `npm test`（基线 488 只增）、`npm run build`、`npm run lint`；
