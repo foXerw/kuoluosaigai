@@ -274,6 +274,17 @@ it('原子写：写盘用 tmp+rename，中途异常不留半个文件')
 **Interfaces:**
 - Consumes: `node:fs` 的 `openSync(path, 'wx')`（O_EXCL）、`process.kill` 探测
 - Produces: `acquireLock({ dir, fileName = 'saigai-bot.lock', pid = process.pid, startedAt = Date.now(), isAlive = (p) => boolean }) -> { ok: true, tookOver: boolean, writeLock() } | { ok: false, holder: {pid, startedAt} }`；锁文件内容 `{pid, startedAt}` JSON；`releaseLock()` 只删自己的锁
+  - **裁定 R21（本条初稿与控制器派发令相冲突，以实现为准）**：初稿把锁写成
+    `{ ok, tookOver, writeLock() } + 独立的 releaseLock()`，而派发令给的是**句柄式**
+    `{ ok: true, tookOver, release() }`。两者不一致时**以派发令/实现为准**（`lock.js:100,145`）：
+    锁的归属信息（pid/startedAt）本来就在句柄里，`release()` 自带对账，没有"模块级全局锁状态"
+    需要暴露；`writeLock()` 更是被 O_EXCL 创建取代（见 §7.4 与本任务实现），留着只会误导。
+    **Task 9 的 `run` 序列请按 `lockHandle = acquireLock(...)` / `lockHandle.release()` 写**，
+    不要再去补一个 `releaseLock()`。
+  - **连带事实（Task 9 必须处理）**：抢锁有 `MAX_ATTEMPTS = 8` 的竞态重试上限；耗尽时返回的
+    `holder` 可能是 `{ pid: null, startedAt: null }`（实现里标注为"正常路径不可达"）。
+    `run` 在 `ok:false` 分支**不得**无条件打印 `holder.pid`（会打出 `null` 让运维一头雾水），
+    要分"知道是谁"与"不知道是谁"两种文案，且两者都**必须非零退出、绝不静默**（A5）。
 
 - [ ] **Step 1: 写失败测试**
 
