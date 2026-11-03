@@ -394,7 +394,13 @@ it('releaseLock 由非持有者调用 → 不删他人锁')
     另记 Task 5 审查的连带事实：`computeOrphans` 从缓存基准重播，所以**手工删 `state.json` 里的孤儿条目不会生效**
     （下一次写就复活）——若 Task 10 的 `status` 要暴露孤儿，须一并给出一条清理途径。
   - provider 的 `apiKey` 只在这一步从 `cfg.provider.apiKey ?? process.env` 注入 deck，**永不**回写盘（Task 5 已保证）
-  - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{name, uptimeMs, globalHourCount, restartRequired, generatedAt}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它；`deviceId` 属 P3，不在 P1 产出）
+  - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{deviceId, name, uptimeMs, globalHourCount, restartRequired, generatedAt}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它）
+    - **裁定 R29（Task 7 轮2 问到的那一行）**：`deviceId` **保留在 meta 里**（P1 期间恒为占位值）。
+      它与 §8.2 里"`pair` 子命令 P1 先不出现、避免文档承诺未实现能力"那条顾虑**不同类**：
+      `pair` 是一个用户会去敲的**命令**，而 `deviceId` 是快照里的一个**数据字段**——P3 需要它，
+      现在删掉将来又要改回 `snapshot()` 的形状并连带改 Task 10 的渲染。**代价**：P1 期间 `status`
+      会显示一个空的 deviceId，看着像"没配对"——那正是事实，不构成误导。
+      **但 P3 动工时必须记得：字段存在 ≠ 已接线**，本计划不产出任何可辨识的设备身份。
     - **裁定 R28（复审校正 + 给 Task 8 的歧义警告）**：①上面这条摘要行原本还留着已作废的
       `deviceId` 且漏了 `generatedAt`/`restartRequired`，按实现改齐；②**`restartRequired` 现在有两个
       同名字但不同语义**——`report.restartRequired` 是**本次 converge** 的，`meta.restartRequired` 是
