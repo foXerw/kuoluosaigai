@@ -13,11 +13,16 @@
 //   不可烧穿额度」（Q9 原文）；daemon 配置校验（Task 4 validateConfig，裁定 R9）
 //   应在门外拦住坏钟串，这里是纵深防御——且**不静默吞错**：deck 建 gate 时对该状态
 //   发一次性 onEvent('warn', {reason})（审查轮 1 #1），故障可观测。
-// - createGate 的 hourAccountor 参数可选（预扫描裁定 R1）：本任务不生产它，
-//   缺省即「不做全局拦截」；Task 3 造 createHourAccountor 并接入。合流顺序已钉：
-//   点名可越过静默窗/上线窗，但越不过全局小时闸。
+// - createGate 的 hourAccountor 参数可选（预扫描裁定 R1）：Task 2 留的缺省「不做全局
+//   拦截」位，Task 3 由本模块生产 createHourAccountor 并接入（deck 配置了
+//   globalHourlyMessages 才注入）。合流顺序已钉：点名可越过静默窗/上线窗，
+//   但越不过全局小时闸（§12：预算耗尽连点名也静默——省钱优先于礼貌）。
 // - 静默窗内「不主动发起、不接非点名的话」（不调 LLM，省钱生效）；点名照常回——
 //   消费方：deck 闲置发起处 + runner 发送决策处（gate 端口）。
+
+// 小时滚动窗口与 rhythm 的 bot 级小时预算同源（裁定 R10 / 终审 M4 教训）：两处
+// settleHour 语义必须用同一常量，闸的滚动基准漂移会在整点附近错杀或漏放。
+import { HOUR_MS } from './timing.js'
 
 const CLOCK_RE = /^(\d{1,2}):(\d{2})$/
 
@@ -62,7 +67,55 @@ export function inQuietWindow(ts, { from, to } = {}) {
 }
 
 /**
- * 造发言闸门：静默窗 + 刚上线静默窗（+ Task 3 的全局小时闸插槽，本任务缺省不接）。
+ * 造跨 bot 全局小时记账器（P1 Task 3 / §12 成本主闸）：整点自动归零，与
+ * rhythm.settleHour 同语义（t - hourStart >= HOUR_MS，R10 起常量同源于 timing.js），
+ * 但它是**全 deck 单实例**——rhythm 的 hourlyCap 是每 bot 各计各的，N 个 bot 会把
+ * 花费乘 N，本记账器是唯一的全局天花板。
+ * 语义钉死：
+ * - inc() 逐条入账；canSend() = 「本小时已发条数 < cap」——cap=0 即全时段闭嘴
+ *   （显式杀闸合法），负数同理恒 false。cap 的合法性校验归 Task 4 validateConfig
+ *   （裁定 R9），此处不做类型警察：调用方应传 Number.isFinite(cap) 且 cap ≥ 0。
+ * - inc/count/canSend/settle 都先惰性 settle()：滚动只认注入的 now，不靠真实休眠。
+ * - 记账与拦截解耦：谁 inc 由宿主接线面决定（deck 在家族 activity 处 inc），
+ *   本模块只管「一小时发了几条、还能不能发」。
+ * @param {{ now?: () => number, cap: number }} options
+ * @returns {{ inc: () => void, count: () => number, canSend: () => boolean, settle: (t?: number) => void }}
+ */
+export function createHourAccountor({ now = Date.now, cap } = {}) {
+  let hourStart = now()
+  let n = 0
+
+  /** 惰性结算滚动小时窗：恰满 HOUR_MS（>= 语义，与 rhythm.settleHour 同一基准）即归零。 */
+  function settle(t = now()) {
+    if (t - hourStart >= HOUR_MS) {
+      hourStart = t
+      n = 0
+    }
+  }
+
+  return {
+    /** 记一条「本 deck 真发出去的消息」。无上限守卫：超额入账照常 +1，裁决在 canSend。 */
+    inc() {
+      settle()
+      n += 1
+    },
+    /** 本小时已入账条数（先滚动，读数恒新鲜；有副作用 = settle，与 rhythm.status 同例）。 */
+    count() {
+      settle()
+      return n
+    },
+    /** 全局闸裁决：预算未满 true；已满/超负 cap false。先滚动，满闸状态不粘滞到下个整点。 */
+    canSend() {
+      settle()
+      return n < cap
+    },
+    settle,
+  }
+}
+
+/**
+ * 造发言闸门：静默窗 + 刚上线静默窗 + 全局小时闸（createHourAccountor 实例，
+ * 缺省不接 = R1 的浏览器零变化保证）。
  * @param {{
  *   now?: () => number,
  *   quietHours?: { from?: string, to?: string } | null,
@@ -97,7 +150,7 @@ export function createGate({
     /**
      * 此刻是否允许开口发起/接话。
      * @param {boolean} [mentions] 点名：越过静默窗（Q9「被 @ 仍可回」），
-     *   但越不过 hourAccountor 的全局闸（Task 3 合流顺序，此处留位）。
+     *   但越不过 hourAccountor 的全局闸（Task 3 合流顺序，已接实闸）。
      */
     allowSpeak(mentions = false) {
       if (!mentions && quietNow()) return false

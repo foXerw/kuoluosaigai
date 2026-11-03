@@ -23,12 +23,16 @@
 //    {botId,...payload})（daemon logger 消费）；不注入即静默，浏览器侧零行为变化。
 // 5) 用量累计：onState.session 绝对值与基线差分增量写 lifetime；持久化节流至多每 10s
 //    一次（trailing 合并，内存即时更新）。
-// 6) schedule 刹车（P1 Task 2 / Q9+§12）：宿主经 opts.schedule 注入静默窗
-//    （quietHours 本机墙钟窗 + startupQuietMs 刚上线窗），deck 建 createGate 并：
-//    onGlobalTick 闲置发起前置问 gate.allowSpeak(false)（静默窗整体跳过，心跳/
-//    簿记照常）、gate 经 makeRunnerOpts 透传给 runner 拦非点名回复与直调 pokeIdle。
-//    schedule 未配置 → 不建 gate、runner opts 连 gate 键都不出现（浏览器零变化）。
-//    globalHourlyMessages 属 Task 3 的 hourAccountor——本任务 gate 缺省不做全局拦截（R1）。
+// 6) schedule 刹车（P1 Task 2+3 / Q9+§12）：宿主经 opts.schedule 注入静默窗
+//    （quietHours 本机墙钟窗 + startupQuietMs 刚上线窗）与全局小时预算
+//    （globalHourlyMessages 跨 bot 单实例 hourAccountor），deck 建 createGate 并：
+//    onGlobalTick 闲置发起前置问 gate.allowSpeak(false)（静默窗或闸满整体跳过，心跳/
+//    簿记照常）、gate 经 makeRunnerOpts 透传给 runner 拦非点名回复与直调 pokeIdle；
+//    handleEvent 家族 activity 分支对每条 family===true 上报 hourAccountor.inc()
+//    （Task 3 计数来源，见该处注释）。合流顺序（Q9/Step 4 钉死）：点名越过静默窗、
+//    越不过全局闸。schedule 未配置 → 不建 gate/accountor、runner opts 连 gate 键都
+//    不出现（浏览器零变化）；计数读面 = store.globalHourCount getter
+//    （Task 7 status 快照的 meta.globalHourCount，未配置 → null）。
 //    配置故障自我 announce（审查轮 1 #1）：quietHours 坏端点（fail-closed 已生效）或
 //    schedule 未知键 → 构造期一次性 deps.onEvent('warn', {reason})（无 botId 键）。
 // B18（Task 4 后拓扑）：core 内只 import ./rhythm ./runner ./schedule ./timing；不 import vue、
@@ -37,7 +41,7 @@
 
 import { createIdleScheduler } from './rhythm.js'
 import { createBotRunner } from './runner.js'
-import { createGate, parseClock } from './schedule.js'
+import { createGate, createHourAccountor, parseClock } from './schedule.js'
 import { HEARTBEAT_MS } from './timing.js'
 
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
@@ -110,7 +114,7 @@ export function createNullLease() {
  *   schedule?: {
  *     quietHours?: { from: string, to: string }, // 本机墙钟静默窗 'HH:MM'（跨零点正确；from===to 全时段）
  *     startupQuietMs?: number,                   // 刚上线静默窗（startedAt = deck 构造时刻）
- *     globalHourlyMessages?: number,             // Task 3 的 hourAccountor 消费；本任务不建全局闸（R1）
+ *     globalHourlyMessages?: number,             // Task 3 生效：配了才建跨 bot 单实例 hourAccountor（0=全时段闭嘴；非有限/负数=未配置）
  *   }, // Q9/§12 刹车：未配置 → 不建 gate，行为逐字节如现状（浏览器默认不启用）
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
@@ -139,11 +143,14 @@ export function createDeck({
   const createRunner = deps.createRunner || createBotRunner
   const createScheduler = deps.createScheduler || createIdleScheduler
 
-  // Q9/§12 schedule 刹车（P1 Task 2）：宿主显式传 schedule 才建 gate——不传即
+  // Q9/§12 schedule 刹车（P1 Task 2 + Task 3）：宿主显式传 schedule 才建 gate——不传即
   // gate=null，runner opts 连 gate 键都不出现，浏览器路径逐字节不变。startedAt 取
   // deck 构造时刻（daemon 冷启动即建 deck，「刚上线」语义天然对齐）；
-  // globalHourlyMessages 本任务不消费——createGate 缺 hourAccountor 即不做全局拦截（裁定 R1）。
+  // globalHourlyMessages（Task 3）配了才建 hourAccountor 并注入 gate——跨 bot 单实例
+  // 共享同一小时预算；没配（含缺席/非有限数/负数）即不做全局拦截（R1 的缺省语义保持，
+  // limits 的合法性校验归 Task 4 validateConfig / 裁定 R9，此处只消费、不替它报警）。
   let gate = null
+  let hourAccountor = null
   if (schedule && typeof schedule === 'object') {
     // 审查轮 1 Important #1：配置故障必须自我 announce——坏端点的 fail-closed「全时段
     // 静默」已生效但和合法的全天静默无从区分，24/7 daemon 无人盯屏时唯一外向信号是缺席，
@@ -163,11 +170,16 @@ export function createDeck({
         deps.onEvent('warn', { reason: `schedule: unknown key ignored: ${k}` })
       }
     }
+    const ghm = schedule.globalHourlyMessages
+    if (Number.isFinite(ghm) && ghm >= 0) {
+      hourAccountor = createHourAccountor({ now, cap: ghm })
+    }
     gate = createGate({
       now,
       quietHours: schedule.quietHours,
       startupQuietMs: schedule.startupQuietMs,
       startedAt: now(),
+      hourAccountor,
     })
   }
 
@@ -191,6 +203,17 @@ export function createDeck({
     storageDegraded: false,
     get leaseDegraded() {
       return !!lease.degraded
+    },
+
+    // Task 7 读面（本任务的接口裁定，钉死于 botDeckCore.test.js）：daemon status 快照的
+    // meta.globalHourCount 直读本 getter——属性而非方法（沿 leaseDegraded 先例，
+    // reactiveImpl 透传 getter 语义，恒等包装与 vue reactive 包装读到的同值）。
+    // 语义 = 本滚动小时内入账的家族消息条数（惰性滚动：count() 内先 settle，读数恒新鲜、
+    // 与 rhythm.status() 的惰性结算同例）；globalHourlyMessages 未配置 → null——
+    // 「没装这道闸」（浏览器/opt-out）与「装了但本小时没花」（0）必须可区分，
+    // null-as-absent 是本仓惯例。不进 persist 载荷（那是配置+lifetime 的盘上形状，勿动）。
+    get globalHourCount() {
+      return hourAccountor ? hourAccountor.count() : null
     },
 
     // —— providers ——
@@ -636,6 +659,14 @@ export function createDeck({
 
   function handleEvent(id, type, payload) {
     if (type === 'activity') {
+      // §12 全局小时闸计数来源（P1 Task 3，不新开端口）：family===true 的上报恒意味
+      // 「本 deck 的 bot 真发出去一条消息」——发送成功记账处（runner runJob 尾部）直发
+      // family:true；同房家族 bot 观察到自家消息的回声也报 family=true（handleMessage
+      // 的 fam.has 分支）。因此一条消息在同房多 bot 时可入账多条——多条只会更早闭嘴，
+      // 成本刹车方向上偏省钱无害（宁少花不烧穿），不为去重新开端口。
+      // hourAccountor 为 null（未配 schedule / 未配 globalHourlyMessages）时本行空操作，
+      // 浏览器逐字节不变；真人消息（family≠true）恒不入账。
+      if (hourAccountor && payload && payload.family === true) hourAccountor.inc()
       // 终审 #7：转发 runner 的 family 标志——家族活动走调度器 max 语义保 idle 长窗，
       // 真人活动完全重置
       const room = payload && payload.roomId

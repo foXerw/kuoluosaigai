@@ -17,6 +17,10 @@
 // - thinkMs + typingDelay 的合计封顶（totalDelayCapMs=15000）由调用方（Task 7
 //   runner）负责，本模块只产出各自的分量。
 
+// HOUR_MS（小时滚动窗口）裁定 R10 起单点定义在 timing.js，与 schedule 的跨 bot
+// 全局小时闸同源——本文件只 import，不再持有第二份字面量（终审 M4 教训的小时轴翻版）。
+import { HOUR_MS } from './timing.js'
+
 /** 钉死常量 = spec §7；store（Task 8）与 UI 展示同源引用。区间值均为 [lo, hi] 闭区间毫秒/次数。 */
 export const RHYTHM_DEFAULTS = {
   replyBase: { mention: 0.9, owner: 0.7, human: 0.4, bot: 0.2 }, // isSelf 由调用方先滤，不进 decide
@@ -35,7 +39,6 @@ export const RHYTHM_DEFAULTS = {
 
 // 话痨度系数（设计者裁定）：factor = 0.2 + 1.6 * (chattiness / 100)，最终概率 clamp [0,1]
 // chattiness 50 = 1.0x 基准；0 = 0.2x（不完全闭嘴）；100 = 1.8x
-const HOUR_MS = 3600000
 
 function clamp01(v) {
   return Math.min(1, Math.max(0, v))

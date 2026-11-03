@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import { createNullLease, createDeck, HEARTBEAT_MS } from 'kuoluosaigai-bot-core'
+import { createNullLease, createDeck, HEARTBEAT_MS, HOUR_MS } from 'kuoluosaigai-bot-core'
 
 // Mapish —— createTabLease 的 storage 注入契约就是 {getItem,setItem,removeItem}
 // 三个方法（见 src/bots/lease.js），这里自建一个 Map 封装，不引新测试依赖。
@@ -398,5 +398,184 @@ describe('schedule 刹车端口（Q9+§12，daemon 注入、浏览器缺省不�
     a.deck.dispose()
     b.deck.dispose()
     c.deck.dispose()
+  })
+})
+
+// —— globalHourlyMessages 全局小时闸（P1 Task 3 / §12 成本刹车）——
+// accountor 语义与合流顺序本体由 botSchedule.test.js 钉死；这里测 deck 接线三面：
+// 1) 计数来源 = handleEvent 的 family activity 分支（不新开端口；真人消息不入账）；
+// 2) 消费 = 同一个 gate（同一 accountor 单实例）透传给全部 runner——跨 bot 累加共享
+//    预算，点名越得过静默窗、越不过全局闸；
+// 3) Task 7 读面 = store.globalHourCount getter（配置→数字 / 未配置→null）。
+// 滚动一律推进注入的 now 跨界，不真实休眠。
+describe('globalHourlyMessages 全局小时闸（P1 Task 3 / §12）', () => {
+  const at = (hhmm) => Date.parse(`2026-11-04T${hhmm}:00`)
+  const newRec = () => ({ pokes: [], ticks: [] })
+
+  // famEmitRunner：start() 时经 runner 端口连发 count 条家族 activity
+  //（payload.family===true，形状对齐 runner.js runJob 发送侧上报），并记录 pokeIdle。
+  function famEmitRunner(o, rec, count) {
+    const r = fakeRunner()
+    r.pokeIdle = (x) => rec.pokes.push(x === undefined ? null : x)
+    r.start = () => {
+      for (let i = 0; i < count; i++) o.onEvent('activity', { roomId: 'nebula', family: true })
+    }
+    return r
+  }
+  const scriptedScheduler = (rec) => () => ({
+    notifyActivity() {},
+    tick(cands) {
+      rec.ticks.push(cands.map((c) => c.id))
+      return cands.length ? cands[0].id : null
+    },
+  })
+
+  it('两个 bot 共用一个全局闸：累计到 cap 后 allowSpeak(true) 也变 false（点名不发）', async () => {
+    const optsAll = []
+    const deck = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: 2 },
+      deps: { createRunner: (o) => { optsAll.push(o); return famEmitRunner(o, newRec(), 1) } },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    deck.addBot({ id: 'bot-1', name: '阿宽', roomId: 'nebula' })
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(deck.globalHourCount).toBe(1)
+    expect(optsAll[0].gate.allowSpeak(true)).toBe(true) // 预算未满：点名可越过（此刻连静默窗都没有）
+    expect(await deck.startBot('bot-1')).toBe(true)
+    expect(optsAll[1].gate).toBe(optsAll[0].gate) // 跨 bot 单实例：两个 runner 拿到的是同一个闸
+    expect(deck.globalHourCount).toBe(2)
+    expect(optsAll[0].gate.allowSpeak(false)).toBe(false)
+    expect(optsAll[0].gate.allowSpeak(true)).toBe(false) // 满闸：点名也变 false（不发、更不调 LLM）
+    deck.dispose()
+  })
+
+  it('家族 activity 每条 inc 一次；真人消息不 inc', async () => {
+    const deck = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: 50 },
+      deps: {
+        createRunner: (o) => emittingRunner(o, [
+          { t: 'activity', payload: { roomId: 'nebula', family: true } },
+          { t: 'activity', payload: { roomId: 'nebula', family: false } }, // 真人：不入账
+          { t: 'activity', payload: { roomId: 'nebula' } }, // family 缺席：同样不入账
+          { t: 'activity', payload: { roomId: 'nebula', family: true } },
+        ]),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await deck.startBot('bot-0')
+    expect(deck.globalHourCount).toBe(2) // 逐条 inc：两条家族消息 → 2；两条真人/缺省 → 0
+    deck.dispose()
+  })
+
+  it('跨过整点后 count() 归零（注入 now 推进 3600_001ms，不真实休眠）', async () => {
+    let t = at('12:00')
+    let gateSeen = null
+    const deck = createDeck({
+      storage: new Mapish(),
+      now: () => t,
+      schedule: { globalHourlyMessages: 2 },
+      deps: { createRunner: (o) => { gateSeen = o.gate; return famEmitRunner(o, newRec(), 2) } },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await deck.startBot('bot-0')
+    expect(deck.globalHourCount).toBe(2)
+    expect(gateSeen.allowSpeak(true)).toBe(false)
+    t += HOUR_MS - 1 // 差 1ms 仍是这一小时
+    expect(deck.globalHourCount).toBe(2)
+    t += 2 // 累计 3600_001ms 跨过整点
+    expect(deck.globalHourCount).toBe(0)
+    expect(gateSeen.allowSpeak(true)).toBe(true)
+    deck.dispose()
+  })
+
+  it('globalHourlyMessages 未配置 → 闸恒可发（浏览器零变化）', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      let t = at('12:00')
+      let gateSeen = null
+      // 形态一：schedule 在但没配全局闸 → gate 恒放行，家族消息再多也不记账（null=没装刹车）
+      const deck = createDeck({
+        storage: new Mapish(),
+        now: () => t,
+        schedule: {},
+        deps: {
+          createRunner: (o) => { gateSeen = o.gate; return famEmitRunner(o, rec, 20) },
+          createScheduler: scriptedScheduler(rec),
+        },
+      })
+      deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+      expect(await deck.startBot('bot-0')).toBe(true)
+      expect(gateSeen.allowSpeak(false)).toBe(true)
+      expect(gateSeen.allowSpeak(true)).toBe(true)
+      expect(deck.globalHourCount).toBe(null)
+      vi.advanceTimersByTime(HEARTBEAT_MS * 4)
+      t += HEARTBEAT_MS * 4
+      expect(rec.ticks.length).toBe(4) // 闲置发起照常——未配置就是没装这道闸
+      deck.dispose()
+
+      // 形态二：连 schedule 都不传（浏览器路径）→ 家族 activity 也不炸、不记账
+      const plain = createDeck({
+        storage: new Mapish(),
+        deps: { createRunner: (o) => famEmitRunner(o, newRec(), 3) },
+      })
+      plain.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+      expect(await plain.startBot('bot-0')).toBe(true)
+      expect(plain.globalHourCount).toBe(null)
+      plain.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('全局闸满 → onGlobalTick 闲置发起整体跳过；跨整点滚动后下一班车恢复', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      let t = at('12:00')
+      let gateSeen = null
+      const deck = createDeck({
+        storage: new Mapish(),
+        now: () => t,
+        schedule: { globalHourlyMessages: 1 },
+        deps: {
+          createRunner: (o) => { gateSeen = o.gate; return famEmitRunner(o, rec, 1) },
+          createScheduler: scriptedScheduler(rec),
+        },
+      })
+      deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+      expect(await deck.startBot('bot-0')).toBe(true) // 上线即发 1 条 → 预算满
+      expect(deck.globalHourCount).toBe(1)
+      vi.advanceTimersByTime(HEARTBEAT_MS * 3)
+      t += HEARTBEAT_MS * 3
+      expect(rec.ticks).toEqual([]) // 满闸：调度器连 tick 都不被问（rng 零消耗）
+      expect(rec.pokes).toEqual([])
+      expect(gateSeen.allowSpeak(true)).toBe(false) // 满闸在 deck 层同样压住点名
+      t += HOUR_MS + 1
+      vi.advanceTimersByTime(HEARTBEAT_MS * 2) // 推进注入 now 后搭下一班车
+      expect(rec.ticks.length).toBeGreaterThan(0) // 滚动归零 → 自动恢复发起
+      expect(rec.pokes.length).toBeGreaterThan(0)
+      expect(deck.globalHourCount).toBe(0)
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Task 7 读面契约：store.globalHourCount 是 getter——配置后为数字、未配置为 null', async () => {
+    const deck = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: 9 },
+      deps: { createRunner: (o) => famEmitRunner(o, newRec(), 2) },
+    })
+    expect('globalHourCount' in deck).toBe(true) // 属性面（Task 7 直接读，不是方法调用）
+    expect(deck.globalHourCount).toBe(0) // 配置了但没发过：0（区别于「没装」的 null）
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await deck.startBot('bot-0')
+    expect(deck.globalHourCount).toBe(2)
+    expect(typeof deck.globalHourCount).toBe('number')
+    deck.dispose()
   })
 })

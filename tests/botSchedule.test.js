@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { parseClock, inQuietWindow, createGate } from 'kuoluosaigai-bot-core'
+import { parseClock, inQuietWindow, createGate, createHourAccountor, HOUR_MS } from 'kuoluosaigai-bot-core'
 
 // schedule 刹车端口（P1 Task 2 / spec Q9 + §12）：纯函数直测，时钟全部注入。
 // ts 用「无时区后缀」本地串：Date.parse('2026-11-04T02:00:00') 按执行机本地墙钟
@@ -137,5 +137,84 @@ describe('createGate（静默窗 + 刚上线静默窗；hourAccountor 可选 = �
     t = Date.parse('2026-11-05T12:00:00') // 次日 12:00：上线窗（30min）早已结束，且不在 23:00–06:00 内
     expect(g.quietNow()).toBe(false)
     expect(g.allowSpeak(false)).toBe(true)
+  })
+})
+
+// createHourAccountor（P1 Task 3 / §12 成本主闸）：跨 bot 单实例的小时记账器。
+// 滚动基准与 rhythm.settleHour 同语义（t - hourStart >= HOUR_MS），且 HOUR_MS 与
+// rhythm 同一来源——timing.js 单点定义（裁定 R10，绝不再抄第二份 3600000 字面量，
+// M4 类「两处同值巧合、一改一静默脱钩」不许在小时轴上重演）。
+describe('createHourAccountor（跨 bot 全局小时记账，R10：HOUR_MS 与 rhythm 同源）', () => {
+  it('cap 条内 canSend 恒 true；恰满 cap 那刻 false；count 跟踪 inc', () => {
+    const acc = createHourAccountor({ now: () => 1_000_000, cap: 2 })
+    expect(acc.canSend()).toBe(true)
+    acc.inc()
+    expect(acc.canSend()).toBe(true)
+    expect(acc.count()).toBe(1)
+    acc.inc()
+    expect(acc.canSend()).toBe(false) // 「本小时已发 n 条」是预算维度，不是静默维度
+    expect(acc.count()).toBe(2)
+  })
+
+  it('跨过整点后 count() 归零（注入 now 推进 3600_001ms；整点恰满也归零，>= 同 rhythm）', () => {
+    let t = 2_000_000
+    const acc = createHourAccountor({ now: () => t, cap: 5 })
+    acc.inc()
+    acc.inc()
+    acc.inc()
+    expect(acc.count()).toBe(3)
+    t += HOUR_MS - 1
+    expect(acc.count()).toBe(3) // 差 1ms 未满一小时：不滚动（>= 边界语义钉死）
+    t += 1 // 恰满 HOUR_MS
+    expect(acc.count()).toBe(0)
+    expect(acc.canSend()).toBe(true)
+    acc.inc()
+    expect(acc.count()).toBe(1)
+    t += HOUR_MS + 1 // 3600_001ms 同样归零；靠注入 now 推进，不靠真实休眠
+    expect(acc.count()).toBe(0)
+  })
+
+  it('cap=0 / 负数 → canSend 恒 false（显式把预算归零就是全时段刹车）', () => {
+    const acc0 = createHourAccountor({ now: () => 1, cap: 0 })
+    expect(acc0.count()).toBe(0)
+    expect(acc0.canSend()).toBe(false)
+    const accNeg = createHourAccountor({ now: () => 1, cap: -1 })
+    expect(accNeg.canSend()).toBe(false)
+  })
+
+  it('inc/count/canSend 皆先 settle；settle() 未到时点为幂等空操作', () => {
+    let t = 3_000_000
+    const acc = createHourAccountor({ now: () => t, cap: 1 })
+    acc.inc()
+    expect(acc.canSend()).toBe(false)
+    acc.settle() // 未到整点：什么都不变
+    expect(acc.count()).toBe(1)
+    t += HOUR_MS
+    acc.settle() // 恰满整点（>= 语义）才归零
+    expect(acc.count()).toBe(0)
+  })
+})
+
+// Step 4 合流顺序钉死：点名可越过静默窗，但越不过全局小时闸——用真 createHourAccountor
+// 填满预算（不是 canSend 桩），与上方「hourAccountor 缺省不接」（R1）一起构成优先级
+// 的完整证据链；后续任何改动若颠倒两闸顺序，本用例先红。
+describe('createGate × 真 accountor 的合流顺序（§12 优先级不许反转）', () => {
+  it('静默窗内 + 全局预算耗尽 → 点名也不发；出窗且预算滚动后双双恢复', () => {
+    let t = at('02:00')
+    const acc = createHourAccountor({ now: () => t, cap: 1 })
+    const g = createGate({
+      now: () => t,
+      quietHours: { from: '01:30', to: '08:00' },
+      hourAccountor: acc,
+    })
+    expect(g.allowSpeak(true)).toBe(true) // 预算未满：点名越过静默窗（Q9 语义保持）
+    acc.inc() // 那条点名回复入账
+    expect(g.allowSpeak(true)).toBe(false) // 预算耗尽：全局闸越过点名（本用例的存在理由）
+    expect(g.allowSpeak(false)).toBe(false)
+    expect(g.quietNow()).toBe(true) // 预算不算「静默」：quietNow 仍是窗语义
+    t = at('09:00') // 出窗；距 hourStart 已 7h ≥ 1h，预算同样滚动
+    expect(g.quietNow()).toBe(false)
+    expect(g.allowSpeak(false)).toBe(true)
+    expect(g.allowSpeak(true)).toBe(true)
   })
 })
