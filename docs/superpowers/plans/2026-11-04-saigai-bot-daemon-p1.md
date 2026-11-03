@@ -24,6 +24,16 @@
 - **daemon 不落聊天记录**（§3）：会话缓冲仍是纯内存，重启靠 P2P 历史重建。
 - **daemon 永不写配置文件**（Q2）；配置是用户手写的，回写会毁注释并自触发 watcher。
 - **单房钉死**（Q1）：一 bot = 一连接 = 一房，配置字段是 `room`（字符串），不是 `rooms` 数组。
+- **裁定 R20（跨阶段约束，本计划不实现但必须先定；Task 5 审查 Minor #3 引出）**：core 的
+  `switchBotRoom` 会写 `item.roomId` 并 `persist()`，而 `state.json` 的**权威形状只有
+  `bots:[{id,nick}]`**（Q2 把 room 划归"定义"）。P1 内没有任何 daemon 面会调 `switchBotRoom`
+  （CLI 无此子命令、`status` 只读），所以**当下无损失**；但 spec **Q1** 把 `bot.switchRoom` 放进了
+  **P3** 的指令白名单 —— 届时手机改的房会在**下次重启蒸发**、bot 回到配置声明的房，且操作者无从得知。
+  P3 实现时必须二选一并写进文档：**(a) 把切换后的房作为 state 拥有的覆盖项持久化**
+  （扩 `state.json` 形状为 `bots:[{id,nick,room?}]`，与 nick 同属"运行时可变身份"，
+  配置声明值降级为首次默认）；或 **(b) 明令 daemon 侧房间为只读、拒绝 `bot.switchRoom`**。
+  我倾向 **(a)**：(b) 会让 P3 的一个宣称能力凭空消失。无论选哪条，Task 7 的 `snapshot()` 都要显示
+  **有效房**而非配置房，否则 `status` 会自证清白地撒谎。
 - **`id` 必填且稳定**（Q3）：`[a-z0-9-]{1,32}`，`doctor` 校验唯一；改名=变更、只有 `id` 增删才是增删。
 - **lint 兼容**：`packages/` 在 eslint 覆盖范围内（`lint` = `vue-cli-service lint src tests packages`），故 daemon 代码**不得使用顶层 await**、不得使用 `??=`/`||=` 等新赋值语法；入口一律 `async function main()` + `.then/.catch`。
 
@@ -292,6 +302,13 @@ it('releaseLock 由非持有者调用 → 不删他人锁')
   - `diffConfigs(prev: Cfg, next: Cfg) -> { added: [], removed: [], changed: [], unchanged: [], limitsChanged: boolean }`（纯函数，按 `id` 寻址；`changed` = 除 `id` 外任一字段变；顺序变化不算变更）
   - `createDaemonHost({ cfg, store, logger, now, WebSocketImpl, sleep }) -> { boot(): Promise<void>, converge(nextCfg): Promise<Report>, snapshot(): object, shutdown(): void }`（`converge` 内部调 `diffConfigs` 得动作集，再由本任务决定每类动作怎么落地）
   - `boot()`：`deck.load()` → 按 `cfg.bots[].id` 建/更新 provider 与 bot（`addBot` 传**显式 id**，Q3）→ 逐个 `startBot(id)`；`orphans` 里同名 id 的 `nick` 经 `updateBot(id, {nick})` 复用（身份跨重启延续）
+  - **裁定 R19（Task 5 审查 ⚠️ 项归位）**：Q2 明文"保留 state 条目但**打 ORPHAN 日志**（防误删配置即丢身份）"。
+    Task 5 的 `state.js` **不持有 logger**（它的职责是边界失效，不是播报），故这条日志**归本任务**——
+    `createDaemonHost` 已收 `logger`。落点两处：①`boot()` 复用孤儿身份时打一条 `info`（含 id 与复用的 nick）；
+    ②`converge()` 删除 bot 时打一条 **`warn` 级 ORPHAN**（含 id 与"身份与账目已保留在 state，重新写回同名 id 即复用"）。
+    缺了②就等于 Q2 的保护只剩一半：数据留下了，但操作者**看不见**它留下了。
+    另记 Task 5 审查的连带事实：`computeOrphans` 从缓存基准重播，所以**手工删 `state.json` 里的孤儿条目不会生效**
+    （下一次写就复活）——若 Task 10 的 `status` 要暴露孤儿，须一并给出一条清理途径。
   - provider 的 `apiKey` 只在这一步从 `cfg.provider.apiKey ?? process.env` 注入 deck，**永不**回写盘（Task 5 已保证）
   - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{deviceId, name, uptimeMs, globalHourCount}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它）
 
