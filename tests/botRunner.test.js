@@ -183,7 +183,8 @@ describe('createBotRunner', () => {
     expect(last.session).toEqual({ promptTokens: 11, completionTokens: 7, messages: 1 })
     expect(last.hourCount).toBe(1)
     // 自家发送成功的 activity 上报 = 家族消息（终审 #7：调度器据此走 max 语义）
-    expect(ctx.events[1]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: true } })
+    // R12：发送侧自报带 sent:true——全局小时闸的唯一计数判别位（观察回声不带）
+    expect(ctx.events[1]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: true, sent: true } })
   })
 
   it('总延迟封顶：think 8000 + typing 12000 → 第二段只睡 7000；超长回复截 280', async () => {

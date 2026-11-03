@@ -412,13 +412,14 @@ describe('globalHourlyMessages 全局小时闸（P1 Task 3 / §12）', () => {
   const at = (hhmm) => Date.parse(`2026-11-04T${hhmm}:00`)
   const newRec = () => ({ pokes: [], ticks: [] })
 
-  // famEmitRunner：start() 时经 runner 端口连发 count 条家族 activity
-  //（payload.family===true，形状对齐 runner.js runJob 发送侧上报），并记录 pokeIdle。
+  // famEmitRunner：start() 时经 runner 端口连发 count 条自家发送 activity
+  //（payload = { family:true, sent:true }，R12 判别位——形状对齐 runner.js runJob
+  // 发送侧自报），并记录 pokeIdle。观察回声（收到自家消息）不带 sent，另有用例钉。
   function famEmitRunner(o, rec, count) {
     const r = fakeRunner()
     r.pokeIdle = (x) => rec.pokes.push(x === undefined ? null : x)
     r.start = () => {
-      for (let i = 0; i < count; i++) o.onEvent('activity', { roomId: 'nebula', family: true })
+      for (let i = 0; i < count; i++) o.onEvent('activity', { roomId: 'nebula', family: true, sent: true })
     }
     return r
   }
@@ -456,17 +457,88 @@ describe('globalHourlyMessages 全局小时闸（P1 Task 3 / §12）', () => {
       schedule: { globalHourlyMessages: 50 },
       deps: {
         createRunner: (o) => emittingRunner(o, [
-          { t: 'activity', payload: { roomId: 'nebula', family: true } },
+          { t: 'activity', payload: { roomId: 'nebula', family: true, sent: true } },
           { t: 'activity', payload: { roomId: 'nebula', family: false } }, // 真人：不入账
           { t: 'activity', payload: { roomId: 'nebula' } }, // family 缺席：同样不入账
-          { t: 'activity', payload: { roomId: 'nebula', family: true } },
+          { t: 'activity', payload: { roomId: 'nebula', family: true, sent: true } },
         ]),
       },
     })
     deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
     await deck.startBot('bot-0')
-    expect(deck.globalHourCount).toBe(2) // 逐条 inc：两条家族消息 → 2；两条真人/缺省 → 0
+    expect(deck.globalHourCount).toBe(2) // 逐条 inc：两条家族发送 → 2；两条真人/缺省 → 0
     deck.dispose()
+  })
+
+  // R12 去重判别位：计数只认发送侧自报（sent:true），同房家族 bot 观察到自家消息
+  // 的回声（family:true 无 sent）不得二次入账——否则 N 个同房 bot 时一条真实发送
+  // 计 N 条，Task 7 的 meta.globalHourCount 最高虚报 5×（MAX_BOTS=5）。
+  it('R12：A 自家发送（sent:true）入账 1；B 观察到同条回声（family:true 无 sent）不重复入账', async () => {
+    const deck = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: 10 },
+      deps: {
+        // bot-0 = 发送者 A：runJob 尾部自报；bot-1 = 同房观察者 B：handleMessage 回声上报
+        createRunner: (o) => emittingRunner(o, o.bot.id === 'bot-0' ? [
+          { t: 'activity', payload: { roomId: 'nebula', family: true, sent: true } },
+        ] : [
+          { t: 'activity', payload: { roomId: 'nebula', family: true } }, // B 看到 A 的消息——不是它的发送
+        ]),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    deck.addBot({ id: 'bot-1', name: '阿宽', roomId: 'nebula' })
+    await deck.startBot('bot-0')
+    await deck.startBot('bot-1')
+    expect(deck.globalHourCount).toBe(1) // 一次真实发送 = 入账 1（旧口径此处会是 2）
+    deck.dispose()
+  })
+
+  // R14（审查轮 1 教条外溢）：坏 globalHourlyMessages 是「装错了的刹车」，必须自我
+  // announce——与坏 quietHours 端点同块同格式（reason + 无 botId 键）；行为保持
+  // R1 缺省（视同未配置、不建闸），合法性拒收的本职仍在 Task 4 validateConfig（R9）。
+  it('R14：globalHourlyMessages 坏值（字符串/负数）→ 构造期一次性 warn（无 botId），闸视同未配置', async () => {
+    const seen = []
+    const rec = newRec()
+    const deck = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: '10' },
+      deps: {
+        onEvent: (type, payload) => seen.push({ type, payload }),
+        createRunner: (o) => famEmitRunner(o, rec, 3),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(seen).toEqual([
+      { type: 'warn', payload: { reason: 'schedule.globalHourlyMessages invalid -> global hourly gate not armed' } },
+    ])
+    expect('botId' in seen[0].payload).toBe(false) // deck 级配置告警载荷契约
+    expect(deck.globalHourCount).toBe(null) // 坏值 = 未配置：不建闸、不记账
+    deck.dispose()
+
+    const seenNeg = []
+    const deckNeg = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: -1 },
+      deps: { onEvent: (type, payload) => seenNeg.push(payload) },
+    })
+    expect(deckNeg.globalHourCount).toBe(null)
+    expect(seenNeg).toEqual([
+      { reason: 'schedule.globalHourlyMessages invalid -> global hourly gate not armed' },
+    ])
+    deckNeg.dispose()
+
+    // 反例守卫：cap=0 是合法的显式杀闸——不得误报 invalid warn，且闸确实建成（数字 0）
+    const seenZero = []
+    const deckZero = createDeck({
+      storage: new Mapish(),
+      schedule: { globalHourlyMessages: 0 },
+      deps: { onEvent: (type, payload) => seenZero.push(payload) },
+    })
+    expect(seenZero).toEqual([])
+    expect(deckZero.globalHourCount).toBe(0)
+    deckZero.dispose()
   })
 
   it('跨过整点后 count() 归零（注入 now 推进 3600_001ms，不真实休眠）', async () => {

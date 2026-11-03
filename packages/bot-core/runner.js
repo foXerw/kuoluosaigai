@@ -226,7 +226,8 @@ export function createBotRunner({
     buffer.push(frame)
     rev += 1
     patch({ rev })
-    // 终审 #7 接线：family 标志 = 自己观察到的家族成员消息（自家发送在 runJob 上报）
+    // 终审 #7 接线：family 标志 = 自己观察到的家族成员消息（自家发送在 runJob 上报）。
+    // R12：观察侧不带 sent——回声不是本 bot 的发送，不入全局小时闸的账。
     onEvent?.('activity', { roomId: frame.roomId, family: fam.has(frame.nick) })
 
     const decision = rhythm.decide({
@@ -327,7 +328,9 @@ export function createBotRunner({
       patch({ rev, session: { ...session }, hourCount })
       pushStatus()
       // 自家消息 = 家族活动（终审 #7）：调度器对家族消息走 max 语义，不腰斩 idle 长窗
-      onEvent?.('activity', { roomId: connection.currentRoomId, family: true })
+      // R12：sent:true 是全局小时闸的计数判别位——只在发送侧自报这里出现；
+      // 观察路径不带此键。family 的调度语义不因 sent 增减而改变（sent 仅供计数）。
+      onEvent?.('activity', { roomId: connection.currentRoomId, family: true, sent: true })
     } finally {
       speaking = false
       const next = pendingJob

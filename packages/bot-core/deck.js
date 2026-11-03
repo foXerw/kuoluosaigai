@@ -28,8 +28,9 @@
 //    （globalHourlyMessages 跨 bot 单实例 hourAccountor），deck 建 createGate 并：
 //    onGlobalTick 闲置发起前置问 gate.allowSpeak(false)（静默窗或闸满整体跳过，心跳/
 //    簿记照常）、gate 经 makeRunnerOpts 透传给 runner 拦非点名回复与直调 pokeIdle；
-//    handleEvent 家族 activity 分支对每条 family===true 上报 hourAccountor.inc()
-//    （Task 3 计数来源，见该处注释）。合流顺序（Q9/Step 4 钉死）：点名越过静默窗、
+//    handleEvent 对发送侧自报（family===true 且 sent===true，审查 R12 判别位）
+//    hourAccountor.inc()——观察回声不重复入账；sent 不参与调度决策（终审 #7 的
+//    max 语义字节不变）。合流顺序（Q9/Step 4 钉死）：点名越过静默窗、
 //    越不过全局闸。schedule 未配置 → 不建 gate/accountor、runner opts 连 gate 键都
 //    不出现（浏览器零变化）；计数读面 = store.globalHourCount getter
 //    （Task 7 status 快照的 meta.globalHourCount，未配置 → null）。
@@ -114,7 +115,7 @@ export function createNullLease() {
  *   schedule?: {
  *     quietHours?: { from: string, to: string }, // 本机墙钟静默窗 'HH:MM'（跨零点正确；from===to 全时段）
  *     startupQuietMs?: number,                   // 刚上线静默窗（startedAt = deck 构造时刻）
- *     globalHourlyMessages?: number,             // Task 3 生效：配了才建跨 bot 单实例 hourAccountor（0=全时段闭嘴；非有限/负数=未配置）
+ *     globalHourlyMessages?: number,             // Task 3 生效：配了才建跨 bot 单实例 hourAccountor（0=全时段闭嘴；坏值=未配置但构造期一次性 warn / R14）
  *   }, // Q9/§12 刹车：未配置 → 不建 gate，行为逐字节如现状（浏览器默认不启用）
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
@@ -146,12 +147,16 @@ export function createDeck({
   // Q9/§12 schedule 刹车（P1 Task 2 + Task 3）：宿主显式传 schedule 才建 gate——不传即
   // gate=null，runner opts 连 gate 键都不出现，浏览器路径逐字节不变。startedAt 取
   // deck 构造时刻（daemon 冷启动即建 deck，「刚上线」语义天然对齐）；
-  // globalHourlyMessages（Task 3）配了才建 hourAccountor 并注入 gate——跨 bot 单实例
-  // 共享同一小时预算；没配（含缺席/非有限数/负数）即不做全局拦截（R1 的缺省语义保持，
-  // limits 的合法性校验归 Task 4 validateConfig / 裁定 R9，此处只消费、不替它报警）。
+  // globalHourlyMessages（Task 3 + 审查 R14）配了才建 hourAccountor 并注入 gate——
+  // 跨 bot 单实例共享同一小时预算；缺席即不做全局拦截（R1 缺省语义保持）。
+  // 在场但坏值（非有限数/负数，如 '10'、-1）视同未配置——行为缺省不变，但**不静默**：
+  // 装错了的刹车必须自我 announce（与坏 quietHours 端点同一教条，审查轮 1 #1 的外溢），
+  // 构造期一次性 warn（无 botId 键）。分工照旧：Task 4 validateConfig 在门外拒坏
+  // literals（R9），这里是直连 bot-core 消费者的纵深，两者互不替代。
   let gate = null
   let hourAccountor = null
   if (schedule && typeof schedule === 'object') {
+    const ghm = schedule.globalHourlyMessages
     // 审查轮 1 Important #1：配置故障必须自我 announce——坏端点的 fail-closed「全时段
     // 静默」已生效但和合法的全天静默无从区分，24/7 daemon 无人盯屏时唯一外向信号是缺席，
     // 所以构造期一次性 warn 上宿主汇。形状契约：deck 级配置告警没有 botId——载荷
@@ -163,6 +168,11 @@ export function createDeck({
       if (qh && (!parseClock(qh.from) || !parseClock(qh.to))) {
         deps.onEvent('warn', { reason: 'schedule.quietHours unparseable -> quiet all day' })
       }
+      // R14：闸在场但配坏 = 装错了的刹车——缺席/显式 null（null-as-absent 惯例）与
+      // 合法值（有限数 ≥0，含 0 的显式杀闸）都静默；其余一次性 announce。
+      if (ghm !== undefined && ghm !== null && !(Number.isFinite(ghm) && ghm >= 0)) {
+        deps.onEvent('warn', { reason: 'schedule.globalHourlyMessages invalid -> global hourly gate not armed' })
+      }
       const unknownKeys = Object.keys(schedule)
         .filter((k) => !['quietHours', 'startupQuietMs', 'globalHourlyMessages'].includes(k))
         .sort()
@@ -170,7 +180,6 @@ export function createDeck({
         deps.onEvent('warn', { reason: `schedule: unknown key ignored: ${k}` })
       }
     }
-    const ghm = schedule.globalHourlyMessages
     if (Number.isFinite(ghm) && ghm >= 0) {
       hourAccountor = createHourAccountor({ now, cap: ghm })
     }
@@ -659,14 +668,15 @@ export function createDeck({
 
   function handleEvent(id, type, payload) {
     if (type === 'activity') {
-      // §12 全局小时闸计数来源（P1 Task 3，不新开端口）：family===true 的上报恒意味
-      // 「本 deck 的 bot 真发出去一条消息」——发送成功记账处（runner runJob 尾部）直发
-      // family:true；同房家族 bot 观察到自家消息的回声也报 family=true（handleMessage
-      // 的 fam.has 分支）。因此一条消息在同房多 bot 时可入账多条——多条只会更早闭嘴，
-      // 成本刹车方向上偏省钱无害（宁少花不烧穿），不为去重新开端口。
-      // hourAccountor 为 null（未配 schedule / 未配 globalHourlyMessages）时本行空操作，
-      // 浏览器逐字节不变；真人消息（family≠true）恒不入账。
-      if (hourAccountor && payload && payload.family === true) hourAccountor.inc()
+      // §12 全局小时闸计数来源（P1 Task 3 + 审查 R12）：只认发送侧自报
+      // family===true && sent===true（runner runJob 尾部的唯一判别位）。观察路径
+      // （handleMessage 的 fam.has 回声）family=true 但不带 sent——若也入账，同房
+      // N 个 bot 时一条真实发送计 N 条、globalHourCount 最高虚报 MAX_BOTS=5 倍，
+      // 「本 deck 发出条数」的口径就废了（Task 7 状态快照直接吃这个数）。
+      // sent 不参与调度决策：notifyActivity 仍照旧逐条透传 family（终审 #7 语义
+      // 字节不变）。hourAccountor 为 null（未配 schedule/闸）时本行空操作，浏览器
+      // 逐字节不变；真人消息（family≠true / 不带 sent）恒不入账。
+      if (hourAccountor && payload && payload.family === true && payload.sent === true) hourAccountor.inc()
       // 终审 #7：转发 runner 的 family 标志——家族活动走调度器 max 语义保 idle 长窗，
       // 真人活动完全重置
       const room = payload && payload.roomId
