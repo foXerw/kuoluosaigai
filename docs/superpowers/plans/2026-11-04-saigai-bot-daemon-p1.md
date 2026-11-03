@@ -395,7 +395,15 @@ it('releaseLock 由非持有者调用 → 不删他人锁')
     （下一次写就复活）——若 Task 10 的 `status` 要暴露孤儿，须一并给出一条清理途径。
   - provider 的 `apiKey` 只在这一步从 `cfg.provider.apiKey ?? process.env` 注入 deck，**永不**回写盘（Task 5 已保证）
   - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{deviceId, name, uptimeMs, globalHourCount, restartRequired, generatedAt}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它）
-    - **裁定 R29（Task 7 轮2 问到的那一行）**：`deviceId` **保留在 meta 里**（P1 期间恒为占位值）。
+    - **裁定 R29（Task 7 轮2 问到的那一行）**：`deviceId` **保留在 meta 里**。
+    - **裁定 R30（R29 的收紧，轮2 复审暴露）**：R29 只说了"占位值"而没规定**占位值必须是
+      `null`**，实现体于是填了 `os.hostname()`——那是**凭空造出来的身份**。spec **Q4** 写的是：
+      daemon 首启**本地铸造 device token** 存进数据目录（跨重启稳定），`deviceId` 由它派生
+      （§14 建议 = token 的 SHA-256 前 8 位）。所以 P1 的 `deviceId` **一律为 `null`**，
+      删掉读主机名那两行。理由：①主机名不是设备身份，P3 一到就得换掉，等于先埋一个会误导消费者的值；
+      ②`status` 上显示主机名会让人**以为**那就是 deviceId（"字段存在≠已接线"这条被值掩盖了）；
+      ③主机名是机器可识别信息，P3 的 dev-state 帧一旦带上它就不再只留在 localhost。
+      人类可读的设备标签本来就有 `meta.name`（= 配置里的 `name`，如 `lab-vm`），不需要主机名兜底。
       它与 §8.2 里"`pair` 子命令 P1 先不出现、避免文档承诺未实现能力"那条顾虑**不同类**：
       `pair` 是一个用户会去敲的**命令**，而 `deviceId` 是快照里的一个**数据字段**——P3 需要它，
       现在删掉将来又要改回 `snapshot()` 的形状并连带改 Task 10 的渲染。**代价**：P1 期间 `status`
