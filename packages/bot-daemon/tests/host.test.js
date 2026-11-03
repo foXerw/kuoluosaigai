@@ -573,6 +573,17 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
 })
 
 describe('snapshot 与观测汇（Task 1 的端口在此接线）', () => {
+  it('R30：meta.deviceId 键位恒在但 P1 恒为 null——主机名不是设备身份（Q4 的本地令牌铸造归 P3），boot 前后都是 null', async () => {
+    const ctx = setup(validCfg())
+    const before = ctx.host.snapshot()
+    expect('deviceId' in before.meta).toBe(true) // R29：键位保留，Task 10 原样渲染
+    expect(before.meta.deviceId).toBe(null)
+    await ctx.host.boot()
+    const after = ctx.host.snapshot()
+    expect('deviceId' in after.meta).toBe(true)
+    expect(after.meta.deviceId).toBe(null) // 不得是 os.hostname()——冒名身份会让 status 撒谎，且属机器标识外泄面
+  })
+
   it('snapshot 不含 apiKey 任何子串', async () => {
     const ctx = setup(validCfg())
     await ctx.host.boot()

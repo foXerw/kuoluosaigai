@@ -52,8 +52,6 @@
 // deck 的 lifetime 有 10s 节流——不先冲刷，窗口内的 token 账会在 removeBot 删
 // store.lifetime[id] 的那一刻凭空蒸发，直接吃 Q2「state 拥有账目」的承诺。
 
-import os from 'node:os'
-
 import { createDeck, createNullLease } from 'kuoluosaigai-bot-core'
 import { diffConfigs, changedBotFields } from './converge.js'
 
@@ -130,12 +128,12 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
   // R27 捆绑②（R26「不可能看漏」的完成条件）：需要**进程重启**才能兑现的变化是粘滞位，
   // converge 置位、snapshot 常驻上报；只有换新 host（进程重启语义）才回 false。
   let pendingRestart = false
-  let deviceId = null
-  try {
-    deviceId = os.hostname()
-  } catch (e) {
-    /* 拿不到主机名不拦 boot：meta.deviceId 为 null，status 面自会显示 */
-  }
+  // R30（Q4/裁定 R29 补正）：P1 的 deviceId **恒为 null**——os.hostname() 是冒名身份：
+  // 它既不是设备令牌（Q4 要求首启在数据目录铸造本地令牌、§14 建议 SHA-256 前 8 位，
+  // 归 P3），又会在 status 里让操作者误信它就是 deviceId，还会把机器标识带进 P3 的
+  // dev-state 帧流出本机。键位保留（R29：Task 10 原样渲染 meta、P3 需要字段在场），
+  // 人类可读标签本就有 meta.name（配置 name）。
+  const deviceId = null
 
   // —— 日志：一切经 safeLog ——
   function safeLog(level, msg, fields) {
