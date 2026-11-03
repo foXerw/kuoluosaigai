@@ -190,10 +190,20 @@ bundle 时会试图把它打进浏览器包里，直接炸在构建上。core �
   单进程内起真 `server/`（临时端口 + `KUO_ROOMS_FILE` 指临时目录），`createBotConnection` 以
   `globalThis.WebSocket`（Node 24 原生实现，正是 P1 daemon 的处境）连入公共房 `setsubun`，
   真实协议双向收发：assign/joined 下行、join 广播与 message 上行、观察者发言回传 bot。零 LLM 调用。
-- 实测：build 绿、lint 绿、`npm test` **386** 绿（客户端 347 + 服务端 39）。
-- **浏览器 BOT DECK 手工点击流未执行**（本环境无浏览器）——留给人类下一次开站时按清单核验：
+- 实测：build 绿、lint 绿、`npm test` **388** 绿（客户端 349 + 服务端 39）。
+  （原记「386 / 347」为终审修复波 `d28596f` 之前的数字，未随最后两条用例刷新；2026-11-03 晚
+  在 worktree 与合并后的主检出各重跑一遍，均为 388。）
+- **浏览器 BOT DECK 手工点击流**：本环境无浏览器，当时未执行；清单留给人类核验——
   BOT 入口打开 → 新建 provider + bot → 启动进公共房发言 → 观战窗有缓冲 → 刷新后配置仍在
-  （localStorage 键不变）→ 第二标签页显示「他处运行」。
+  （localStorage 键不变）→ 第二标签页显示跨标签租约提示。
+  **2026-11-03 晚已由用户人工点过，第 6 条通过**（合并前验收）。文案订正：真实字符串是
+  **「在另一标签运行中」**（`src/components/BotCard.vue:8`，卡片 header 最右，全仓唯一渲染点；
+  主界面与聊天室没有任何租约提示，故第二标签必须打开 BOT DECK 面板才看得到）。本文早先写的
+  「他处运行」是概括措辞、代码中不存在，按 grep 找不到属正常。最快复现路径：第二标签直接点
+  「▶ 启动」，`acquire` 失败即置 `rt.otherTab`（不依赖 `storage` 事件）。
+  **未记录的干扰因素**：Chrome 对后台标签 5 分钟后把定时器节流到每分钟一次（intensive
+  throttling），而租约心跳 15s、`STALE_MS` 60s——持有方标签久藏后台会让另一标签的提示闪灭。
+  这是浏览器节流，不是互斥失效；人工验收时让持有方标签保持可见。该行为无自动化覆盖（R19）。
 
 ---
 
@@ -230,6 +240,15 @@ export default {
   ],
 }
 ```
+
+### 8.1.1 配置桥：浏览器 deck → daemon 配置（用户 2026-11-03 裁定，属 P1 范围）
+
+浏览器 BOT DECK 的配置存在 localStorage `kuoluosaigai:bots:v1`，daemon 读的是上面的 ESM 文件，
+两者之间原本没有桥（要么手抄 persona，要么各写各的）。裁定：**P1 加一个「导出为
+`saigai-bot.config.js`」按钮**，把当前 providers/bots/persona 转成可直接 `--config` 载入的文件。
+约束——导出**只在浏览器本地生成文件**（下载/复制到剪贴板），不经服务器、不上传；apiKey 默认
+写成 `process.env.KUO_LLM_KEY` 占位而**不**把明文 key 写进导出物（与 A1/A3 一致）。
+导出物必须是纯数据 default export（§8.1 的 `doctor` 校验规则同样适用）。
 
 ### 8.2 CLI
 
