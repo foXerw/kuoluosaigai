@@ -25,3 +25,6 @@ pnpm-debug.log*
 
 # brainstorming companion
 .superpowers/
+
+# Claude Code 本地目录（settings.local.json + EnterWorktree 的 .claude/worktrees/ 副本）
+.claude/
