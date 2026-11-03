@@ -31,9 +31,11 @@
 // 与 token 账同时丢掉。所以每次写入都与「上一次写入的完整文档」比较（内存缓存优先，无缓存
 // 读盘为基准——重启后停机期间被删的 id 照样收拢）：消失的 id 把 {nick, lifetime} 存进
 // orphans[id]；同 id 再现时由 Task 7 经 readOrphans() 复用（updateBot(id,{nick})）。
-// 退役规则：仅当载荷已**完整携带**该 id 的昵称与账目，孤儿条目才退役——再现但身份尚未回填
-// 的窗口（addBot 与 updateBot 之间崩溃）必须保留，否则「保留机制」本身反而成了一次身份销毁。
-// 二次消失且旧条目在场：账目并账（deck 对再添加的 bot 从零记账，两段账不相交，相加=总量），
+// 退役规则（审查 Important #1 修订）：载荷接管昵称、且孤儿**不再携带账目**（lifetime null）
+// 才退役。带账目的条目恒保留——core 对再添加的 bot 从零记账且无 lifetime seed 通道，若
+// 「载荷也开始带账目就退役」，旧账会在复用后首笔 token 落账的那一刻被连条目删掉（账目半边
+// 恰好死于复用瞬间）。再现但昵称尚未回填的窗口（addBot 与 updateBot 之间崩溃）同样保留。
+// 二次消失且旧条目在场：账目并账（新旧两段不相交，相加=总量，不重复计入），
 // nick 只升不降（载荷为空则沿用旧值）。
 //
 // —— 失败语义（两种都不许崩 daemon）——
@@ -129,7 +131,8 @@ export function createFileStateStore({ dir, fileName = 'state.json' }) {
   }
 
   /**
-   * 与上次写入比较，收拢消失 id 的 {nick, lifetime}，并让被载荷完整接管的条目退役。
+   * 与上次写入比较，收拢消失 id 的 {nick, lifetime}，并让「昵称已回载荷且账目已并无可留」
+   * （lifetime === null）的条目退役。
    * prev 为净化后的盘文档（bots 条目只剩 {id,nick}，账目在 prev.lifetime）；
    * payload 为净化后的新载荷。返回的 orphans 只进盘，不进 getItem 供入面。
    */
@@ -165,13 +168,17 @@ export function createFileStateStore({ dir, fileName = 'state.json' }) {
       if (nick === null && lifetime === null) continue // 无可保留的身份也没有账目，不造空条目
       orphans[b.id] = { nick, lifetime }
     }
-    // 再现且载荷已完整携带昵称与账目 → 退役；账目不缺的 id 若载荷缺账目则保留（别让退役动作
-    // 反而丢账目——deck 对再添加的 bot 从零记账，旧账此刻只活在 orphans 里）。
+    // 再现且载荷已接管昵称 → 退役判定（审查 Important #1 修订）：**仅当孤儿不再携带账目**
+    // （lifetime === null）才退役；带账目的条目恒保留。理由：core 从不 seed 历史——deck 对
+    // 再添加的 bot 从零记账，且 lifetime 没有注入口（applySessionDelta 首笔增量才懒建条目），
+    // 所以「载荷也带账目就退役」会在首笔 token 事件落账的那一刻把复用前的旧账连条目一起删掉，
+    // Q2「state 拥有身份与账目」的账目半边恰好死于复用瞬间。保留的代价为零：二次消失走上面的
+    // 并账路径，载荷段（复用后新记）与孤儿段（复用前旧账）恒不相交——无 seed 即无重叠，
+    // 相加不重复计入（回归测试 lixiao 10/5 + 3/4 = 13/9 钉死）。
     for (const id of Object.keys(orphans)) {
       const b = nextById.get(id)
       if (!b || b.nick === null) continue
-      const carried = normLedger(payload.lifetime[id])
-      if (carried !== null || orphans[id].lifetime === null) delete orphans[id]
+      if (orphans[id].lifetime === null) delete orphans[id]
     }
     return orphans
   }

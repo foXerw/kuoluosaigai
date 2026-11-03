@@ -143,13 +143,40 @@ describe('孤儿身份保留（Q2：误删配置不丢身份）', () => {
     expect(s2.readOrphans()).toEqual({ a: { nick: 'ANON-A', lifetime: null } })
   })
 
-  it('同 id 再现且载荷已带全 nick 与账目 → orphans 条目退役（数据来源归一于载荷）', () => {
+  it('同 id 再现且载荷已接管昵称、孤儿无账目可留（lifetime null）→ 退役——core 数据流能产生的唯一退役形态', () => {
     const store = createFileStateStore({ dir: freshDir() })
-    store.setItem(CONFIG_KEY, corePayload([coreBot({ id: 'a', nick: 'ANON-A' })], { a: { promptTokens: 10, completionTokens: 5 } }))
-    store.setItem(CONFIG_KEY, corePayload([], {}))
-    store.setItem(CONFIG_KEY, corePayload([coreBot({ id: 'a', nick: 'ANON-A' })], { a: { promptTokens: 12, completionTokens: 6 } }))
+    store.setItem(CONFIG_KEY, corePayload([coreBot({ id: 'a', nick: 'ANON-A' })], {})) // 从未记账的 bot
+    store.setItem(CONFIG_KEY, corePayload([], {})) // 误删 → orphan {ANON-A, lifetime:null}
+    store.setItem(CONFIG_KEY, corePayload([coreBot({ id: 'a', nick: 'ANON-A' })], {})) // 复用回填 nick → 退役
     expect(store.readOrphans()).toEqual({})
     expect(readDoc(store).orphans).toEqual({})
+  })
+
+  it('回归（审查 Important #1，真实 core 序列）：误删→复用→首笔 token 落账，孤儿旧账 10/5 不得被退役吞掉', () => {
+    const dir = freshDir()
+    const store = createFileStateStore({ dir })
+    const deck = createDeck({ storage: store })
+    deck.addProvider({ id: 'provider-1', name: 'ds', baseUrl: 'https://api.deepseek.com/v1', apiKey: SECRET_KEY })
+    deck.addBot({ id: 'lixiao', name: '小李', persona: 'p', chattiness: 50, model: 'm', temperature: 0.9, rawPrompt: '', roomId: 'nebula', nick: 'ANON-7C2D' })
+    // core 对 lifetime **没有 seed API**：applySessionDelta（deck.js:650-661）在首笔 token
+    // 增量时懒建 store.lifetime[id]。直写该字段再 persist 与内部效果的落盘字节等形——
+    // 载荷全程出自 core 的 persist（含 apiKey 在场、pick 全形状），不是手写的。
+    deck.lifetime.lixiao = { promptTokens: 10, completionTokens: 5 }
+    deck.persist()
+    expect(store.readOrphans()).toEqual({})
+    deck.removeBot('lixiao') // 误删：core 连 lifetime[lixiao] 一起删（deck.js:298）再 persist
+    expect(store.readOrphans()).toEqual({ lixiao: { nick: 'ANON-7C2D', lifetime: { promptTokens: 10, completionTokens: 5 } } })
+    // 配置行重新出现：Task 7 显式 id 复用（addBot 时 nick 尚未回填 → 载荷 nick null）
+    deck.addBot({ id: 'lixiao', name: '小李', persona: 'p', chattiness: 50, model: 'm', temperature: 0.9, rawPrompt: '', roomId: 'nebula' })
+    deck.updateBot('lixiao', { nick: 'ANON-7C2D' }) // 再从 orphans 回填身份
+    // 首笔 token 事件到达：载荷开始携带 core 从零记的**新**账 {3,4}；此刻旧账 10/5 只有孤儿持有
+    deck.lifetime.lixiao = { promptTokens: 3, completionTokens: 4 }
+    deck.persist()
+    expect(store.readOrphans()).toEqual({ lixiao: { nick: 'ANON-7C2D', lifetime: { promptTokens: 10, completionTokens: 5 } } })
+    // 再消失一次：并账=两段不相交之和（无 seed 即无重叠），不重复计入
+    deck.removeBot('lixiao')
+    expect(store.readOrphans()).toEqual({ lixiao: { nick: 'ANON-7C2D', lifetime: { promptTokens: 13, completionTokens: 9 } } })
+    deck.dispose()
   })
 
   it('再现但身份尚未回填（崩溃窗口）→ orphans 不退役、不被空值覆盖', () => {
