@@ -207,8 +207,19 @@ it('loadConfig 拒绝函数值：配置文件导出 { bots: () => [] } → error
 > **由构造保证为真**，不再靠注释同步。
 > **别顺手过度合并**：`rhythm.js` 与 `llm.js` 各有一个同值参数默认，但是否属"bot 人格参数"这**同一个域**
 > 需核实——本仓已有明确反例：`timing.js` 头注释专门写明服务端 `HEARTBEAT_MS=30000`（WS keepalive）
-> 与客户端 `15000`（tick/心跳）是**两个域、不是重复**。同名同值 ≠ 同语义；确认同域才合并，
-> 否则各留各的并写明理由。
+> 与客户端 `15000`（tick/心跳）是**两个域、不是重复**。同名同值 ≠ 同语义。
+>
+> **裁定 R17（Task 4 复审回校 R16 的措辞，以 R17 为准）**：复审查明 `rhythm.js:92`/`llm.js:86`
+> 其实是**同域同值**（就是同一个 chattiness/temperature 参数），照 R16 字面读该合并——但**合并不了**：
+> `deck.js` 已经 `import` 了 rhythm（`deck.js:43`）与 runner→llm（`deck.js:44`/`runner.js:40`），
+> 让 rhythm/llm 反过来 import deck 的常量就是**循环依赖**；要合并必须新设一个"共享常量模块"，
+> 那已越出本轮"零行为变化"的边界。故定案：**保留两处签名级默认 + 把理由写进代码注释**
+> （已落在 `deck.js:51-56`），R16 那句"确认同域才合并"据此读作"**同域且无环才可合并**"。
+> 二者在产品内所有 bot 路径上是**休眠**的（`addBot` 与载入都过 `normalizeCfg`，有限值必得；
+> `runner.js:269/426` 无条件显式传参），唯一活路是外部消费者绕过 deck 直呼 `createRhythm`/
+> `chatCompletion`——这正是注释所记的"边界兜底"角色。附带纠正一处 R16 未见的盲点：
+> `deck.js` 的 `pick()`（`deck.js:70-73`）把 undefined 映射成 **null**，而 null **不会**触发 JS
+> 参数默认值——任何未来依赖"省略即取默认"的改动都要走 `normalizeCfg`，不得靠 `pick` 传空。
 
 - [ ] **Step 4: 跑测试确认失败** — Run: `npm run test --workspace kuoluosaigai-bot-daemon` Expected: FAIL
 - [ ] **Step 5: 实现 `config.js`** — 纯数据判定用递归 `typeof` 扫描（函数/symbol/`__proto__` 键一律拒）；`MAX_BOTS` 从 core 再导出（`import { MAX_BOTS } from 'kuoluosaigai-bot-core'`），**不得**在 daemon 里抄第二份常量（R3 同族教训）。
@@ -445,6 +456,20 @@ it('日志一行一条合法 JSON，且不含 "Authorization"')
 **Interfaces:**
 - Consumes: `store`（`providers`/`bots`）、Task 4 的 `Cfg` 形状（**只作为注释引用，不 import daemon 代码**——`src/` 不得依赖 daemon 包，方向只能反过来）
 - Produces: `buildConfigFile({ providers, bots, deviceName }) -> string`，产出合法 ESM 纯数据 default export；`apiKey` 一律写成 `process.env.KUO_LLM_KEY` 占位，**绝不**内联明文
+- **裁定 R18（Task 4 复审带来的两条 T13 约束，属本任务范围）**：
+  1. **导出物必须从 `raw`（用户真正设过的字段）生成，不得从回填后的 `cfg` 生成。** `validateConfig`
+     会把 `chattiness`/`temperature` 等缺省**补成显式值**（`config.js:302` 每条 bot 都带全这两个键）。
+     若导出时照抄这份回填结果，就等于把"当时代码里的默认值"钉进用户手写的配置文件，
+     **日后 core 改默认对这个用户永久失效**——正是 R16/R17 刚消灭的那类分叉，换个途径复活。
+     断言方式：给一个**省略** `chattiness` 的 bot，导出文本里**不该**出现 `chattiness:`。
+  2. **顺手把 `src/components/BotDeck.vue:134/137` 的 `chattiness: 50` / `temperature: 0.9`
+     字面量换成从 core import `DEFAULT_CHATTINESS` / `DEFAULT_TEMPERATURE`**（该文件已经在 import
+     `MAX_BOTS`/`PROVIDER_PRESETS`，改动近乎免费）。这是同一 bug 类在**浏览器侧**的活体实例：
+     表单初始值会作为显式值流进 `addBot`，core 默认日后改动传不到 UI 新建的 bot。
+     另记一处待清雷：`src/components/BotCard.vue:107` 的 `temperature: 0.7` 是**死数据**
+     （`toggleEdit` 在表单渲染前会用真值重刷 `draft`），但它恰好就是新常量注释里引的"终审 M1 曾误 0.7"
+     那个值——任何将来"不走 `toggleEdit` 直接渲染 `draft`"的编辑态重构都会被它误导。本任务若不改它，
+     至少在 ledger/PR 说明里点名。
 
 - [ ] **Step 1: 写失败测试**
 
