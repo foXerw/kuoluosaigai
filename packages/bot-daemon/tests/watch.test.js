@@ -206,13 +206,63 @@ describe('Task 8：配置热重载 watcher（轮询 + debounce + 坏读不动作
     await vi.advanceTimersByTimeAsync(2000) // 两轮同读 → debounce 已起（2500 才会发）
     expect(file.calls()).toBe(2)
     w.stop()
+    // 句柄纪律的直接断言（Task 9 --once 干净退出的前提）：轮询 interval 与已起的
+    // debounce 都必须真被 clear——只靠 !running 守卫的"行为安全"不算数，
+    // 挂着的 fake timer 在真进程里就是不肯 exit 的活句柄。
+    expect(vi.getTimerCount()).toBe(0)
     await vi.advanceTimersByTimeAsync(5000)
     expect(rec.seen.length).toBe(0) // debounce 被清，没借尸还魂
     expect(file.calls()).toBe(2) // 轮询被清，没多读一轮
     w.stop() // 重复 stop 无害
+    expect(vi.getTimerCount()).toBe(0)
     w.start() // 停后可重启（Task 9 的接线面）
     await vi.advanceTimersByTimeAsync(2500)
     expect(rec.seen.length).toBe(1)
+    w.stop()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('onSettle 抛（converge 炸）：只 warn 不出声反杀，watcher 活着且后续变更照常 settle（R31：同内容不重试）', async () => {
+    const G = raw()
+    const H = raw({ name: 'lab-vm-H' })
+    const file = fakeFile(G)
+    const log = fakeLogger()
+    const seen = []
+    function onSettle(cfg) {
+      seen.push({ t: Date.now(), cfg })
+      // 第一次交付炸（模拟 converge 内部抛）；第二次正常返回 host 同款 Report——
+      // 钉"错误分支不是单向门"：链没碎、watcher 没死。
+      if (seen.length === 1) {
+        return Promise.reject(new Error('converge 炸了（测试注入）'))
+      }
+      return Promise.resolve({
+        added: ['lixiao'],
+        removed: [],
+        changed: [],
+        unchanged: [],
+        limitsChanged: false,
+        serverUrlChanged: false,
+        providerChanged: false,
+        restartRequired: false,
+        needsBotRestart: true,
+      })
+    }
+    const w = createConfigWatcher({ load: file.load, onSettle, logger: log })
+    w.start()
+    await vi.advanceTimersByTimeAsync(2500) // G 稳定 → hand-off → onSettle reject
+    expect(seen.length).toBe(1)
+    // 错误被吞进日志（warn 级、带"不停任何 bot"的承诺），且只此一条，不重放
+    expect(log.rec.warn.some((e) => String(e.msg).includes('抛异常'))).toBe(true)
+    expect(log.rec.warn.some((e) => String(e.msg).includes('不停任何 bot'))).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(2000) // 内容没再变：R31 裁定语义——同一内容**不重试**，
+    expect(seen.length).toBe(1) // 否则对必炸的 converge 每 ~1.5s 重放一次就是打进 host.current 的重试风暴
+
+    file.set(H) // 后续真变更：串行队列没被 rejection 打断，照常交付第二次收敛
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(seen.length).toBe(2)
+    expect(seen[1].cfg.name).toBe('lab-vm-H')
+    expect(log.rec.info.some((e) => String(e.msg).includes('收敛完成'))).toBe(true)
     w.stop()
   })
 
