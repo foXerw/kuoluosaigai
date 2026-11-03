@@ -138,7 +138,11 @@ git commit -m "feat(core): 可选 schedule 端口——quietHours 静默窗与�
 - Test: `tests/botSchedule.test.js`、`tests/botDeckCore.test.js`
 
 **Interfaces:**
-- Consumes: Task 2 的 `createGate(...)`、deck 现有 `handleEvent` 中 `type === 'activity' && payload.family === true` 分支（`deck.js:583-587`，**家族消息 = 本 deck 真正发出去的一条**，是全局计数的天然来源，不必新开端口）
+- Consumes: Task 2 的 `createGate(...)`、deck 现有 `handleEvent` 中 `type === 'activity' && payload.family === true` 分支
+  - **⚠️ 原前提作废（裁定 R12）**：本节初稿写"家族消息 = 本 deck 真正发出去的一条，是全局计数的天然来源，不必新开端口"——**这句是错的**。`activity + family:true` 有**两个**发射点：`runner.js:330`（自家发送成功自报）与 `runner.js:230`（**收到**家族成员的帧；自家帧在 `:219` 被丢弃）。故 N 个**同房**运行 bot 时，一条真实发言 = 1 次自报 + (N−1) 次同胞回声 = **N 次 inc**，即 `globalHourlyMessages=120` 配 5 个同房 bot 实际只准 ~24 条/小时，且 `globalHourCount` 最高虚报 5×（§8.6 要求"status 数字与实际发出条数一致"）。误差因子恰为同房运行 bot 数（家族集只含运行中 deck-bot 的 nick，`deck.js:586-593`），人类/主人发言从不 inc，故非无界。方向偏省钱（fail-safe），但**计数与闸都失真**。
+  - **修法（裁定 R12 定案）**：不新增事件类型，只给发送侧自报那一条加判别位 `sent: true`（`runner.js:330` 处）；deck 仅在 `family === true && payload.sent === true` 时 `inc()`。`family` 的调度器语义（max 语义保 idle 长窗）**保持逐字节不变**——判别位只用于计数，不参与调度决策。需改 `runner.js` 一行 + `deck.js` 一个条件，比"新增 'sent' 事件类型"更小，且不动 Task 1 钉住的"宿主汇只收 error/warn"契约。
+  - 必须补测试把它钉住（审查 Minor #4 指出原实现只在注释里说明、无用例）：两个 fake runner，A 发 `{family:true, sent:true}`（自报）、B 发 `{family:true}`（收到 A 的话的回声）→ 断言 `globalHourCount === 1`。
+  - **同轮附带（裁定 R14，破例把一条 Minor 拉进修复轮）**：`globalHourlyMessages` 传进来是负数/非有限/字符串时，deck 现在按"未配置"处理且**零告警**——与 Task 2 修复轮刚确立的"刹车装错了必须自己 announce"教义自相矛盾（畸形 `quietHours` 端点会 warn，畸形预算不会）。同一构造块、同一条理由、两行代码，拆到别处只会让代码带着已知不一致出厂。**注意 R12/R9 分工**：配置层（Task 4 validateConfig）拦字面量类型，core 层的 warn 是给 bot-core 直接消费者兜底，两者不互相替代。
 - Produces: `createHourAccountor({ now, cap }) -> { inc(), count(), canSend(), settle() }`（整点自动归零，与 `rhythm` 的 `settleHour` 同语义但**跨 bot 单实例**）；`schedule.globalHourlyMessages?: number` 生效
 
 - [ ] **Step 1: 写失败测试**
