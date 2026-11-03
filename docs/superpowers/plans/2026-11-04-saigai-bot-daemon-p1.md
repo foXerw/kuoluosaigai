@@ -173,7 +173,8 @@ it('globalHourlyMessages 未配置 → 闸恒可发（浏览器零变化）')
 - Produces:
   - `loadConfig(path: string) -> Promise<Cfg>`：`import(path + '?t=' + now())`（§8.1 cache-buster）
   - `validateConfig(raw: unknown) -> { ok: boolean, errors: string[] }`，`Cfg = { name: string, serverUrl: string, provider: {baseUrl, apiKey?, model}, limits?: {globalHourlyMessages?, quietHours?{from,to}, startupQuietMs?}, ownerNick?: string, bots: Array<{id, name, persona, room, chattiness?, temperature?, hourlyBudget?, rawPrompt?}> }`
-  - 校验红线：顶层必须是纯数据 default export；值允许 `process.env.X`；**函数 / symbol / 类实例 / 未知键 / `bots[].id` 重复或不合 `[a-z0-9-]{1,32}` / `room` 非 6 位 `[a-z0-9]` 或不在白名单公共房形态 / `bots.length > MAX_BOTS`** → errors
+  - 校验红线：顶层必须是纯数据 default export；值允许 `process.env.X`；**函数 / symbol / 类实例 / 未知键 / `bots[].id` 重复或不合 `[a-z0-9-]{1,32}` / `room` 不合 `/^[a-z0-9]{6}$/` / `bots.length > MAX_BOTS`** → errors
+  - **裁定 R15（订正本节初稿）**：初稿写"`room` 非 6 位 `[a-z0-9]` **或不在白名单公共房形态**"——后半句**作废**。daemon **无法**知道服务器的私房注册表（那是 `server/data/rooms.log` 服务端 append-only 落盘，多房间轮的设计），做白名单校验会把合法的**私房**一律判非法。故 `validateConfig` 只做**形状**校验 `/^[a-z0-9]{6}$/`；房间**是否存在**是运行时/服务器的事（配错会在 join 时拿 `join-error`，由 runner 分级处理与 `doctor` 的 WS 实测兜），不在静态校验里猜。
   - **`limits` 也必须校验**（Task 2 审查 ⚠️ 项补，裁定 R9）：`limits` 里的**未知键**一律拒（`quietHour` 少个 s 这种拼写错，若放过去会让 core 侧 `quietHours &&` 判空 → **静默失败为"永不静默"**，正是这道刹车要防的通宵烧钱）；`quietHours.from/to` 必须过 core 的 `parseClock`（复用同一份实现，不得另写正则）；`startupQuietMs` / `globalHourlyMessages` 必须是正数。理由：core 侧对畸形端点是 fail-**closed**（全天静默），对缺失键是 fail-**open**——两种失败方向相反，所以**必须在配置层就拦住**，不能指望下游兜。
   - `errors[]` 每条以字段路径开头（`bots[2].id: ...`），供 `doctor` 直接打印
 
