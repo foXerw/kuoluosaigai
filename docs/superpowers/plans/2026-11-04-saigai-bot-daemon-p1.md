@@ -171,6 +171,43 @@ it('globalHourlyMessages 未配置 → 闸恒可发（浏览器零变化）')
 
 ---
 
+### Task 3b: core — 每 bot 小时预算 `hourlyBudget` 真接通（插在 Task 7 之前执行）
+
+**为什么多出这个任务（裁定 R24，控制器自造的计划缺陷）**：spec §8.1 的配置样例里有
+`bots[].hourlyBudget`，Task 4 也照它建了白名单并做了类型校验（`config.js:51`、`:286-303`）。
+但**没有任何东西消费它**：`runner.js:426` 只调 `createRhythm({ rng, now, chattiness })`，从不传
+`params`；`deck.js` 的 `BOT_CFG_KEYS` 里也没有 `hourlyBudget`，所以 Task 7 把它交给 `addBot` 后会被
+`normalizeCfg` **静默丢弃**。这正是我在 Task 3 审查轮里批评过的"存在但不生效的旋钮"（R14），
+只不过这次是**我自己**造出来的。删除该键也可行，但那等于把 spec 样例里的一个能力抹掉且谎称实现；
+接通它才诚实。`createRhythm` 本身**已经**支持 `params` 浅覆盖 `RHYTHM_DEFAULTS`
+（`rhythm.js` 的 `params = {}` / `{...RHYTHM_DEFAULTS, ...params}`），所以本任务只做透传，不造新机制。
+
+**Files:**
+- Modify: `packages/bot-core/deck.js`（`BOT_CFG_KEYS` 增 `'hourlyBudget'`；`normalizeCfg` 保留它；
+  `makeRunnerOpts` 透传）
+- Modify: `packages/bot-core/runner.js`（`createRhythm` 调用处按存在与否传 `params: { hourlyCap }`）
+- Modify: `packages/bot-daemon/config.js`（校验文案与注释指向"生效"，勿再声明未接线）
+- Test: `tests/botDeckCore.test.js`、`tests/botRunner.test.js`、`packages/bot-daemon/tests/config.test.js`
+
+**Interfaces:**
+- Consumes: `createRhythm({ rng, now, chattiness, params? })`（`params` 浅覆盖，含 `hourlyCap`）；
+  Task 2/3 的 gate/schedule（**每 bot 的 cap 与全局闸是两个独立层，都生效，谁先满谁拦**）
+- Produces: bot 配置多一个可选字段 `hourlyBudget?: number`；`normalizeCfg` 语义：缺失或非有限值 →
+  **不设该键**（不是 `null`、不是 0），因为 `runner` 要按"有没有"决定是否覆盖 `hourlyCap`。
+  ⚠️ 注意 `pick()`（`deck.js:70-73`）会把 `undefined` 映射成 **null**（R17 已记），
+  所以透传路径**不能**依赖 `pick` 保住了"省略"这个信息。
+
+- [ ] **Step 1: 写失败测试** — ①`createRhythm` 收到 `params:{hourlyCap:20}` 当且仅当 bot 配了
+  `hourlyBudget`；未配时 `params` 不含 `hourlyCap`（用 spy 断言入参形状，且**不得**多消耗 rng）；
+  ②配了 20 的 bot 在第 21 条时被 `hourlyCap` 拦（沿用 rhythm 现有"超限只回 mentions"语义）；
+  ③`persist` 往返：带 `hourlyBudget` 的 bot `load()` 后仍在，且**老载荷缺该键**时读回来是"未设"
+  （不是 0——0 的含义是"一条都不发"，两者必须可区分）；④全局闸与 per-bot cap 同时在场的优先级用例。
+- [ ] **Step 2: 跑测试确认失败**（`npx vitest run tests/botRunner.test.js tests/botDeckCore.test.js`）
+- [ ] **Step 3: 实现透传**（改动限于上述四处；不动 `RHYTHM_DEFAULTS` 的 30 默认值）
+- [ ] **Step 4: 三道门全绿** — `npm test`（基线 488 只增）、`npm run build`、`npm run lint`；
+  并**专门确认** schema 未 bump（可选字段是**加性**变更，`SCHEMA_VERSION` 保持 1）
+- [ ] **Step 5: 提交** — `feat(core): 每 bot hourlyBudget 接通 rhythm hourlyCap（裁定 R24）`
+
 ### Task 4: daemon 包骨架 + ESM 配置 loader 与纯数据校验
 
 **Files:**
