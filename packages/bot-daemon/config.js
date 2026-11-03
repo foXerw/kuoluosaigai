@@ -31,7 +31,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { MAX_BOTS, parseClock } from 'kuoluosaigai-bot-core'
+import { MAX_BOTS, parseClock, DEFAULT_CHATTINESS, DEFAULT_TEMPERATURE } from 'kuoluosaigai-bot-core'
 
 // 再导出：MAX_BOTS 唯一来源是 core，daemon 各处（含测试）从这里取，不得抄字面量。
 export { MAX_BOTS }
@@ -43,10 +43,6 @@ const HTTP_URL_RE = /^https?:\/\//
 const BOT_ID_RE = /^[a-z0-9-]{1,32}$/ // Q3：id 必填且稳定，改名=变更、增删 id=增删
 const ROOM_RE = /^[a-z0-9]{6}$/ // R15：仅形状
 
-// core 的 deck.js:483-486 用同样的缺省值（50 / 0.9），但那是函数参数默认、core 未导出常量。
-// 这里是 daemon 侧唯一的第二处定义——改 core 那两处时必须同步这里（注释即同步点，值不进日志）。
-const DEFAULT_CHATTINESS = 50
-const DEFAULT_TEMPERATURE = 0.9
 
 const TOP_KEYS = ['name', 'serverUrl', 'provider', 'limits', 'ownerNick', 'bots']
 const PROVIDER_KEYS = ['baseUrl', 'apiKey', 'model']

@@ -48,6 +48,14 @@ import { HEARTBEAT_MS } from './timing.js'
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
 export const SCHEMA_VERSION = 1
 export const MAX_BOTS = 5
+// bot 拟人参数的唯一权威缺省（裁定 R16，G2/A8）：normalizeCfg 从这里取，daemon 配置层
+// 缺省回填也经 index.js 从这里 import——此前是散落字面量，终审 M1 记录过 temperature 曾
+// 误 0.7 的漂移。rhythm.js / llm.js 签名里同值同名的参数缺省与本组**同值域不同角色**：
+// 那是 core 直接消费者绕过 deck 时的模块边界兜底，deck 路径永远显式透传归一化值
+// （runner.js 对 createRhythm/chatCompletion 都显式传参），故权威无分叉、R16-4 裁定不
+// 强行合并（合并需新建常量模块，rhythm/llm 反向 import deck 会成环）。
+export const DEFAULT_CHATTINESS = 50
+export const DEFAULT_TEMPERATURE = 0.9
 export const PROVIDER_PRESETS = [
   { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com' },
   { name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1' },
@@ -480,10 +488,10 @@ export function createDeck({
       id: typeof c.id === 'string' && c.id ? c.id : String(fallbackId || ''),
       name: String(c.name ?? '').slice(0, 12),
       persona: String(c.persona ?? ''),
-      chattiness: Number.isFinite(chattiness) ? chattiness : 50,
+      chattiness: Number.isFinite(chattiness) ? chattiness : DEFAULT_CHATTINESS,
       providerId: c.providerId ?? null,
       model: String(c.model ?? ''),
-      temperature: Number.isFinite(temperature) ? temperature : 0.9, // spec §7 钉死默认（终审 M1，曾误 0.7）
+      temperature: Number.isFinite(temperature) ? temperature : DEFAULT_TEMPERATURE, // spec §7 钉死默认（终审 M1，曾误 0.7——现收口为文件头权威常量）
       rawPrompt: String(c.rawPrompt ?? ''),
       roomId: typeof c.roomId === 'string' ? c.roomId : '',
       nick: typeof c.nick === 'string' && c.nick ? c.nick : null,

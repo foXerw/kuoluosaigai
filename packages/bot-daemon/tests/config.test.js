@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { loadConfig, validateConfig, ConfigLoadError, MAX_BOTS } from '../config.js'
-import { MAX_BOTS as CORE_MAX_BOTS } from 'kuoluosaigai-bot-core'
+import { MAX_BOTS as CORE_MAX_BOTS, DEFAULT_CHATTINESS, DEFAULT_TEMPERATURE } from 'kuoluosaigai-bot-core'
 
 let tmpDir
 beforeAll(() => {
@@ -42,9 +42,10 @@ describe('validateConfig：纯数据红线与字段校验', () => {
     const r = validateConfig(minimalRaw())
     expect(r.ok).toBe(true)
     expect(r.errors).toEqual([])
-    // 缺省回填进归一化 cfg（与 core deck.js:483-486 同值；core 未导出，daemon 侧注释钉同步点）
-    expect(r.cfg.bots[0].chattiness).toBe(50)
-    expect(r.cfg.bots[0].temperature).toBe(0.9)
+    // 缺省回填断言对 core 导出的权威常量取齐（裁定 R16）——测试名里的 50/0.9
+    // 由构造为真；daemon 侧不再持有第二份字面量（终审 M1/M4 漂移教训在此收口）。
+    expect(r.cfg.bots[0].chattiness).toBe(DEFAULT_CHATTINESS)
+    expect(r.cfg.bots[0].temperature).toBe(DEFAULT_TEMPERATURE)
   })
 
   it('validateConfig：bots[].id 重复 → errors 含 "bots[1].id" 且指明 dup', () => {
