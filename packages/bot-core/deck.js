@@ -29,13 +29,15 @@
 //    簿记照常）、gate 经 makeRunnerOpts 透传给 runner 拦非点名回复与直调 pokeIdle。
 //    schedule 未配置 → 不建 gate、runner opts 连 gate 键都不出现（浏览器零变化）。
 //    globalHourlyMessages 属 Task 3 的 hourAccountor——本任务 gate 缺省不做全局拦截（R1）。
+//    配置故障自我 announce（审查轮 1 #1）：quietHours 坏端点（fail-closed 已生效）或
+//    schedule 未知键 → 构造期一次性 deps.onEvent('warn', {reason})（无 botId 键）。
 // B18（Task 4 后拓扑）：core 内只 import ./rhythm ./runner ./schedule ./timing；不 import vue、
 //    不碰浏览器全局（reactive/lease/storage/主人昵称读取全由宿主注入）；
 //    不碰 useChat/roomCache/roomList。
 
 import { createIdleScheduler } from './rhythm.js'
 import { createBotRunner } from './runner.js'
-import { createGate } from './schedule.js'
+import { createGate, parseClock } from './schedule.js'
 import { HEARTBEAT_MS } from './timing.js'
 
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
@@ -114,6 +116,8 @@ export function createNullLease() {
  *     createRunner?: Function, createScheduler?: Function,
  *     sleep?: Function, WebSocketImpl?: Function,
  *     onEvent?: (type: 'error'|'warn', payload: object) => void, // Q7 宿主汇（daemon logger）
+ *     // 载荷形状：runner 转发 = {botId, ...payload}；deck 级 schedule 配置告警（审查轮 1 #1）
+ *     // = {reason} 且**省略 botId 键**（配置故障无主，缺席 ≠ null）——消费方不得假设键恒在。
  *   },
  * }} [opts] storage 必需：缺失 → TypeError（core 纯度红线，不静默摸浏览器全局）
  * @returns {object} 经 reactiveImpl 包装的 store（providers/bots/lifetime/storageDegraded/leaseDegraded + 方法）
@@ -141,6 +145,24 @@ export function createDeck({
   // globalHourlyMessages 本任务不消费——createGate 缺 hourAccountor 即不做全局拦截（裁定 R1）。
   let gate = null
   if (schedule && typeof schedule === 'object') {
+    // 审查轮 1 Important #1：配置故障必须自我 announce——坏端点的 fail-closed「全时段
+    // 静默」已生效但和合法的全天静默无从区分，24/7 daemon 无人盯屏时唯一外向信号是缺席，
+    // 所以构造期一次性 warn 上宿主汇。形状契约：deck 级配置告警没有 botId——载荷
+    // 省略该键（不是 null），消费方按 'botId' in payload 区分「无主配置事件」。
+    // 缺席不 warn：schedule/quietHours 没传是合法的「没装刹车」（浏览器与 opt-out 宿主），
+    // 不是故障；坏键/坏端点才是。Task 4 validateConfig（裁定 R9）在门外拦截，这里是纵深。
+    if (typeof deps.onEvent === 'function') {
+      const qh = schedule.quietHours
+      if (qh && (!parseClock(qh.from) || !parseClock(qh.to))) {
+        deps.onEvent('warn', { reason: 'schedule.quietHours unparseable -> quiet all day' })
+      }
+      const unknownKeys = Object.keys(schedule)
+        .filter((k) => !['quietHours', 'startupQuietMs', 'globalHourlyMessages'].includes(k))
+        .sort()
+      for (const k of unknownKeys) {
+        deps.onEvent('warn', { reason: `schedule: unknown key ignored: ${k}` })
+      }
+    }
     gate = createGate({
       now,
       quietHours: schedule.quietHours,

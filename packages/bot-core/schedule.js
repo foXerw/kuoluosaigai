@@ -10,8 +10,9 @@
 //   判定 = (cur >= from || cur < to)；from === to 视为全时段静默（规格明求，
 //   不是边界巧合）。以「当日分钟数」比较而非整点小时，01:30 的窗不会吞掉 01:00。
 // - 端点缺失/不可解析 → fail-closed 判静默：刹车的天职是省钱，「宁显得没睡醒，
-//   不可烧穿额度」（Q9 原文）；daemon 配置校验（Task 4 validateConfig）应在门外
-//   拦住坏钟串，这里是纵深防御。
+//   不可烧穿额度」（Q9 原文）；daemon 配置校验（Task 4 validateConfig，裁定 R9）
+//   应在门外拦住坏钟串，这里是纵深防御——且**不静默吞错**：deck 建 gate 时对该状态
+//   发一次性 onEvent('warn', {reason})（审查轮 1 #1），故障可观测。
 // - createGate 的 hourAccountor 参数可选（预扫描裁定 R1）：本任务不生产它，
 //   缺省即「不做全局拦截」；Task 3 造 createHourAccountor 并接入。合流顺序已钉：
 //   点名可越过静默窗/上线窗，但越不过全局小时闸。

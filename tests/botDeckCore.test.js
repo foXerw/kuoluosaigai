@@ -221,6 +221,7 @@ describe('schedule 刹车端口（Q9+§12，daemon 注入、浏览器缺省不�
           return spyRunner(rec)
         },
         createScheduler: scriptedScheduler(rec),
+        ...(over.onEvent ? { onEvent: over.onEvent } : {}), // 审查#1：宿主汇可选注入
       },
     })
     deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
@@ -317,5 +318,85 @@ describe('schedule 刹车端口（Q9+§12，daemon 注入、浏览器缺省不�
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // —— 审查轮 1 Important #1 修复：配置故障必须自我 announce（一次性 warn 上宿主汇）——
+  // fail-closed/fail-open 语义本体由 botSchedule.test.js 钉死且不许翻转；这里只补可见性：
+  // quietHours 在场但端点坏 → 全时段静默是「已生效的故障」，构造 gate 时一次性 warn；
+  // schedule 内未知键（大小写笔误等）同样 warn（键被忽略 = 潜在失效刹车）。
+  // 端口形状钉死：deck 级配置告警无 botId——载荷不含 botId 键（缺席 ≠ null，防消费方
+  // 把「无主事件」误标成某 bot）。缺席语义不动：schedule/quietHours 不存在是合法的
+  // 「操作者没装刹车」（浏览器与 opt-out 宿主），不是故障，不 warn。
+
+  it('审查#1：quietHours 端点不可解析 → 构造期一次性 warn（reason 固定串），载荷不含 botId 键', async () => {
+    const seen = []
+    const rec = newRec()
+    const { deck, getOpts } = deckWith(rec, {
+      schedule: { quietHours: { from: '25:00', to: '08:00' } },
+      onEvent: (type, payload) => seen.push({ type, payload }),
+    })
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(seen).toEqual([
+      { type: 'warn', payload: { reason: 'schedule.quietHours unparseable -> quiet all day' } },
+    ])
+    expect('botId' in seen[0].payload).toBe(false)
+    expect(typeof getOpts().gate.allowSpeak).toBe('function') // 闸门照建（fail-closed 语义不变）
+    deck.dispose()
+  })
+
+  it('审查#1：quietHours 未知形状（字符串）→ 同样一次性 warn', async () => {
+    const seen = []
+    const rec = newRec()
+    const { deck } = deckWith(rec, {
+      schedule: { quietHours: '01:30-08:00' },
+      onEvent: (type, payload) => seen.push({ type, payload }),
+    })
+    await deck.startBot('bot-0')
+    expect(seen.map((e) => e.payload.reason)).toEqual([
+      'schedule.quietHours unparseable -> quiet all day',
+    ])
+    deck.dispose()
+  })
+
+  it('审查#1：schedule 未知键（startupQuietMS 大小写笔误）→ warn 点名该键；键被忽略不误拦发起', async () => {
+    vi.useFakeTimers()
+    try {
+      const seen = []
+      const rec = newRec()
+      const { deck, advance } = deckWith(rec, {
+        schedule: { startupQuietMS: 60000 },
+        onEvent: (type, payload) => seen.push({ type, payload }),
+      })
+      await deck.startBot('bot-0')
+      expect(seen).toEqual([
+        { type: 'warn', payload: { reason: 'schedule: unknown key ignored: startupQuietMS' } },
+      ])
+      advance(HEARTBEAT_MS) // 笔误键未被当成 startupQuietMs——不静默，发起照常
+      expect(rec.ticks.length).toBe(1)
+      expect(rec.pokes.length).toBe(1)
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('审查#1：未配置 schedule / quietHours 缺席 → 恒零 warn（缺席是合法 opt-out，不是故障）', async () => {
+    const rec = newRec()
+    const mk = (schedule, withEvent) =>
+      deckWith(rec, {
+        at: at('12:00'),
+        schedule,
+        ...(withEvent ? { onEvent: () => { rec.events = (rec.events || 0) + 1 } } : {}),
+      })
+    const a = mk({ quietHours: { from: '01:30', to: '08:00' }, startupQuietMs: 1000 }, true)
+    const b = mk(undefined, true)
+    const c = mk({}, true)
+    await a.deck.startBot('bot-0')
+    await b.deck.startBot('bot-0')
+    await c.deck.startBot('bot-0')
+    expect(rec.events === undefined || rec.events === 0).toBe(true)
+    a.deck.dispose()
+    b.deck.dispose()
+    c.deck.dispose()
   })
 })
