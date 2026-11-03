@@ -334,6 +334,87 @@ describe('createBotRunner', () => {
     expect(b.fetchImpl).toHaveBeenCalledTimes(4) // bot 还活着
   })
 
+  it('非致命 LlmError（429）→ onEvent("error", {kind:"rate", fatal:false})，且 message 不含 apiKey', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5]), // 构造 streak；prob 命中；think=5000（LLM 失败收尾，不再掷 typing/afk）
+      sleepMode: 'auto',
+      fetchImpl: vi.fn(async () => httpError(429)),
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+
+    s.emit(msgFrame())
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(2) // llm 内部重试一次仍败 → 抛 LlmError('rate')
+    const errEvt = ctx.events.find((e) => e.t === 'error')
+    expect(errEvt).toBeTruthy()
+    expect(errEvt.payload).toEqual({ kind: 'rate', message: 'LLM 调用失败: rate（HTTP 429）', fatal: false })
+    const json = JSON.stringify(errEvt.payload)
+    expect(json).not.toContain(KEY)
+    expect(json).not.toMatch(/LEAK|9f3q/) // apiKey 的任何子串都不得进 payload
+    expect(ctx.runner.getState().status).toBe('open') // 非致命：bot 照旧继续运行
+    expect(ctx.events.map((e) => e.t)).toEqual(['activity', 'error']) // 既有事件语义不变
+  })
+
+  it('auth 类错误 → onEvent("error", {kind:"auth", fatal:true}) 且照旧停用 bot', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5]),
+      sleepMode: 'auto',
+      fetchImpl: vi.fn(async () => httpError(401)),
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+
+    s.emit(msgFrame())
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1) // auth 不重试（llm 契约）
+    const errEvt = ctx.events.find((e) => e.t === 'error')
+    expect(errEvt).toBeTruthy()
+    expect(errEvt.payload).toEqual({ kind: 'auth', message: 'LLM 调用失败: auth（HTTP 401）', fatal: true })
+    expect(JSON.stringify(errEvt.payload)).not.toContain(KEY)
+    // 停用行为与既往一致：亮红 + stopped 紧随 error 之后 + 关连接
+    expect(ctx.events.map((e) => e.t)).toEqual(['activity', 'error', 'stopped'])
+    const last = ctx.patches[ctx.patches.length - 1]
+    expect(last.status).toBe('error')
+    expect(last.error).toBe('TOKEN 失效')
+    expect(ctx.events).toContainEqual({ t: 'stopped', payload: 'TOKEN 失效' })
+    expect(s.closedRequested).toBe(true)
+  })
+
+  it('SLOW DOWN 停用 → onEvent("warn", {reason:"SLOW DOWN"})，先于既有 stopped 事件', async () => {
+    const ctx = makeRunner({ rng: mkRng([0.5, 0.5]) }) // streak；penalize#1 掷全新冷却
+    const s = land(ctx)
+    ctx.events.length = 0
+
+    s.emit({ type: 'rate', ts: 1 })
+    s.emit({ type: 'rate', ts: 2 })
+    expect(ctx.events).toEqual([]) // 冷却途中不发事件（那是状态显示的职责）
+    s.emit({ type: 'rate', ts: 3 })
+    expect(ctx.events).toEqual([
+      { t: 'warn', payload: { reason: 'SLOW DOWN' } },
+      { t: 'stopped', payload: 'SLOW DOWN' },
+    ])
+  })
+
+  it('join 重试耗尽停用 → onEvent("warn", {reason}) 报因，先于既有 stopped 事件', async () => {
+    const ctx = makeRunner()
+    ctx.runner.start()
+    const s = StubSocket.instances[0]
+    s.open()
+    ctx.events.length = 0
+    for (let i = 0; i < 3; i++) {
+      s.emit({ type: 'join-error', roomId: 'roomA', reason: 'unknown' })
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    s.emit({ type: 'join-error', roomId: 'roomA', reason: 'unknown' }) // 第 4 个 → 停用
+    expect(ctx.events).toEqual([
+      { t: 'warn', payload: { reason: 'NO SUCH ROOM' } },
+      { t: 'stopped', payload: 'NO SUCH ROOM' },
+    ])
+    const last = ctx.patches[ctx.patches.length - 1]
+    expect(last.status).toBe('error')
+  })
+
   it('pokeIdle：冷却/AFK 门禁下不发；正常走同管道且 buildMessages idle=true', async () => {
     // 门禁：rate 进冷却后 pokeIdle 静默
     const g = makeRunner({ rng: mkRng([0.5, 0.5]) })

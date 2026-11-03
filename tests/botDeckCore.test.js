@@ -116,4 +116,55 @@ describe('createDeck（store 逻辑的宿主无关核心，Task 4）', () => {
   it('不传 storage → TypeError（禁止 core 摸浏览器全局）', () => {
     expect(() => createDeck({})).toThrow(/storage/)
   })
+
+  // (e) Q7 观测端口（P1 Task 1）：deps.onEvent 宿主汇收到 (type, {botId, ...payload})。
+  // 发射端契约由 botRunner.test.js 钉死；本组用例只钉 deck→宿主 转发这一段：
+  // error/warn 转、活动类内部事件（activity/nick/stopped）不转、不注入时不抛。
+  it('deps.onEvent 宿主汇：error/warn 带 botId 转发，activity/nick/stopped 不透传', async () => {
+    const seen = []
+    const deck = createDeck({
+      storage: new Mapish(),
+      deps: {
+        onEvent: (type, payload) => seen.push({ type, payload }),
+        createRunner: (o) => emittingRunner(o, [
+          { t: 'activity', payload: { roomId: 'nebula', family: false } },
+          { t: 'nick', payload: { nick: 'ANON-9Q' } },
+          { t: 'error', payload: { kind: 'rate', message: 'LLM 调用失败: rate（HTTP 429）', fatal: false } },
+          { t: 'warn', payload: { reason: 'SLOW DOWN' } },
+          { t: 'stopped', payload: 'SLOW DOWN' },
+        ]),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(seen).toEqual([
+      { type: 'error', payload: { botId: 'bot-0', kind: 'rate', message: 'LLM 调用失败: rate（HTTP 429）', fatal: false } },
+      { type: 'warn', payload: { botId: 'bot-0', reason: 'SLOW DOWN' } },
+    ])
+    deck.dispose() // startBot 起 setInterval，node 环境不留活句柄（R4）
+  })
+
+  it('不注入 deps.onEvent 时 runner 发 error/warn 不抛（浏览器侧逐字节如现状）', async () => {
+    const deck = createDeck({
+      storage: new Mapish(),
+      deps: {
+        createRunner: (o) => emittingRunner(o, [
+          { t: 'error', payload: { kind: 'server', message: 'LLM 调用失败: server（HTTP 503）', fatal: false } },
+          { t: 'warn', payload: { reason: 'SLOW DOWN' } },
+        ]),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await expect(deck.startBot('bot-0')).resolves.toBe(true)
+    expect(deck.bots[0].rt.status).toBe('connecting') // 转发缺席不改启动语义
+    deck.dispose()
+  })
 })
+
+// emittingRunner —— fakeRunner 的 start() 改为按序经 runner 端口 o.onEvent 回放事件，
+// 走 deck 的 handleEvent 全链路（activity/nick/stopped 的既有内部消费照常发生）。
+function emittingRunner(o, events) {
+  const r = fakeRunner()
+  r.start = () => { for (const e of events) o.onEvent(e.t, e.payload) }
+  return r
+}

@@ -19,6 +19,8 @@
 //    （不再二次掷，防概率平方化）；全员未过 → 调度器按 afterChat 短窗重开（审查轮 1 #1）。
 //    房内无运行 bot → 该房调度器回收。runner onEvent('activity') → 对应房
 //    notifyActivity(payload.family===true 透传，终审 #7：家族消息不腰斩 idle 长窗)。
+//    Q7 观测端口：runner onEvent('error'|'warn') → 宿主汇 deps.onEvent(type,
+//    {botId,...payload})（daemon logger 消费）；不注入即静默，浏览器侧零行为变化。
 // 5) 用量累计：onState.session 绝对值与基线差分增量写 lifetime；持久化节流至多每 10s
 //    一次（trailing 合并，内存即时更新）。
 // B18（Task 4 后拓扑）：core 内只 import ./rhythm ./runner ./timing；不 import vue、
@@ -99,6 +101,7 @@ export function createNullLease() {
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
  *     sleep?: Function, WebSocketImpl?: Function,
+ *     onEvent?: (type: 'error'|'warn', payload: object) => void, // Q7 宿主汇（daemon logger）
  *   },
  * }} [opts] storage 必需：缺失 → TypeError（core 纯度红线，不静默摸浏览器全局）
  * @returns {object} 经 reactiveImpl 包装的 store（providers/bots/lifetime/storageDegraded/leaseDegraded + 方法）
@@ -597,6 +600,13 @@ export function createDeck({
       lease.release(id)
       pruneSchedulers()
       maybeStopTick()
+    } else if (type === 'error' || type === 'warn') {
+      // Q7 观测端口：error/warn 是「发给了无人消费」的外向事件——deck 内部零处置，
+      // 仅在宿主经 deps.onEvent 接线时透传（附 botId，payload 对象展开）。
+      // activity/nick/stopped 不进此汇：它们是 deck 自家记账（调度/持久化/租约），
+      // 且 stopped 的 payload 是字符串，`{botId, ...payload}` 展开会把字符铺成索引键。
+      // 浏览器 store 不传 deps.onEvent → 本分支对浏览器侧完全无感（行为逐字节不变）。
+      if (typeof deps.onEvent === 'function') deps.onEvent(type, { botId: id, ...payload })
     }
   }
 

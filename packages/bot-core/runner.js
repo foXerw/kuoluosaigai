@@ -23,6 +23,14 @@
 //   固定安全文案（SLOW DOWN / NO SUCH ROOM / ROOM FULL / TOKEN 失效 / 配置缺失）。
 // - B11：退避重连与 rejoin 是 connection 的职责；runner 只在 onStatus 变化时镜像
 //   连接态，joined 回执清 rateStreak/冷却显示、rhythm 实例原样保留（预算/间隔连续）。
+// Q7（P1 Task 1 观测端口）：B8 旧口径静默吞掉的非致命 LlmError 与降级停用（SLOW DOWN /
+// join 重试耗尽）现补发观测事件，供宿主（daemon logger）识别「哑巴 bot」：
+// - onEvent('error', { kind, message, fatal })：catch 分支每条 LlmError 必发；kind 取
+//   LlmError.kind，message 取 LlmError.message（经 redact 兜底，B9 已保证不含 apiKey）。
+//   auth → fatal:true（照旧停用亮红），其余 kind → fatal:false（照旧本次放弃）。
+// - onEvent('warn', { reason })：重试耗尽 / SLOW DOWN 等降级停用，先于既有 stopped 发。
+// 非 LlmError 异常一律不 widening：不拼响应体 / 请求配置 / err.detail。
+// 浏览器宿主未接线这些事件也无害（onEvent 是端口，发了没人听 = 现状）。
 // B18：不 import useChat/roomCache/roomList——搬家后 core 零跨界依赖
 // （mergeHistory 已随包内化为例行相对导入 ./historyMerge.js，spec B2 白名单使命完成）。
 
@@ -61,7 +69,8 @@ function between(rng, [lo, hi]) {
  *   rng?: () => number, now?: () => number, sleep?: (ms: number) => Promise<void>,
  *   WebSocketImpl?: typeof WebSocket, fetchImpl?: typeof fetch,
  *   onState?: (patch: object) => void,
- *   onEvent?: (type: 'activity'|'nick'|'stopped', payload?: any) => void,
+ *   onEvent?: (type: 'activity'|'nick'|'stopped'|'error'|'warn', payload?: any) => void,
+ *     // Q7 观测事件：'error' → {kind, message, fatal}；'warn' → {reason}（降级停用报因）
  * }} options
  * @returns {{ start: () => void, stop: (reason?: string) => void,
  *   switchRoom: (roomId: string) => void, clearBuffer: () => void,
@@ -186,6 +195,7 @@ export function createBotRunner({
   function handleJoinError(frame) {
     const text = frame.reason === 'full' ? 'ROOM FULL' : 'NO SUCH ROOM'
     if (joinErrors >= JOIN_RETRY_MAX) {
+      onEvent?.('warn', { reason: text }) // Q7：重试耗尽降级停用，报因先于 stopped
       stop(text, true)
       return
     }
@@ -260,7 +270,14 @@ export function createBotRunner({
         })
       } catch (err) {
         // B8/B9 分级：auth → 立即停用亮红；其余 kind → 本次放弃、bot 继续运行
-        if (err instanceof LlmError && err.kind === 'auth') stop('TOKEN 失效', true)
+        // Q7：两类都上报观测端口（fatal 布尔区分）——静默放弃正是 24/7 daemon 的
+        // 「哑巴 bot」盲区。非 LlmError 异常（含畸形输入兜底）不发事件：kind/message
+        // 契约只认 LlmError，不拼其 detail/响应体/请求配置（红线 B9/A3 不许 widening）。
+        if (err instanceof LlmError) {
+          const isFatal = err.kind === 'auth'
+          onEvent?.('error', { kind: err.kind, message: redact(err.message), fatal: isFatal })
+          if (isFatal) stop('TOKEN 失效', true)
+        }
         return
       }
       // B7 双保险其一：在途期间切房/停机 → 响应作废（连打字延迟都不掷）
@@ -349,6 +366,7 @@ export function createBotRunner({
         rhythm.penalize() // B4：翻倍或掷全新冷却
         rateStreak += 1
         if (rateStreak >= RATE_STOP_AT) {
+          onEvent?.('warn', { reason: 'SLOW DOWN' }) // Q7：限流三连降级停用，报因先于 stopped
           stop('SLOW DOWN', true)
           return
         }
