@@ -253,6 +253,12 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
     const prevProv = current.provider || {}
     const nextProv = nextCfg.provider || {}
     const modelChanged = diff.providerChanged && prevProv.model !== nextProv.model
+    // 扇出值守卫（审查轮 2 #1，恢复基础版就有、R27 改造时被我弄丢的保护）：经
+    // validateConfig 的 cfg 保证 model 非空（config.js:179-180），但「宿主不消毒」的
+    // 直连路径可能给 ''/缺省——deck.updateBot 对 'model' in patch 就写（deck.js:276-281），
+    // undefined 会毒死全部存活 bot 的下次启动（runner 配置缺失：model）。空值 → 不扇出，
+    // 存活 bot 保留原 model（与 deckBotCfg 对 added bot 的同一守卫对称）。
+    const modelFanout = modelChanged && isNonEmptyString(nextProv.model)
 
     // removed 先落地：腾 MAX_BOTS 名额，且后续 add/changed 的 persist 不会把已删 bot
     // 的孤儿收拢顺序搞乱。写序（R27 捆绑①）：persist 冲刷先于 stop/remove——deck 对
@@ -272,7 +278,7 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
     // 在场 runner 仍是启动期快照，新值随各自下一次启动兑现：needsBotRestart 如实标注，
     // 不装「已生效」（R14 教训）。
     if (diff.providerChanged) ensureProvider(nextCfg)
-    if (modelChanged) {
+    if (modelFanout) {
       for (const item of deck.bots.slice()) {
         deck.updateBot(item.id, { model: nextProv.model })
       }
@@ -323,11 +329,14 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
       needsBotRestart: diff.providerChanged || diff.changed.length > 0,
     }
     if (report.restartRequired) pendingRestart = true // 粘滞位：只由进程重启清除
+    // 独立播报（审查轮 2 #2）：两条真相同等地位，else-if 链会在 combined converge
+    // 里吞掉 provider 线——Report 双位在场却只有一条日志，R27② 的诚实只做半截。
     if (diff.limitsChanged || diff.serverUrlChanged) {
       const what = diff.limitsChanged && diff.serverUrlChanged ? 'limits 与 serverUrl' : diff.limitsChanged ? 'limits' : 'serverUrl'
       safeLog('warn', what + ' 变化：闸与 wsUrl 在 deck 构造期冻结、core 无热重算口，本次热重载不触碰任何 bot 连接；将在 daemon 重启后生效（status 的 restartRequired 将保持置位）。', { limitsChanged: diff.limitsChanged, serverUrlChanged: diff.serverUrlChanged })
-    } else if (diff.providerChanged) {
-      safeLog('warn', 'provider 配置变化：新 apiKey/baseUrl 已写入 deck provider' + (modelChanged ? '，新 model 已扇出至全部存活 bot（updateBot，不碰连接）' : '') + '；在场 runner 为启动期快照，将于各 bot 下次重启时生效（本次不主动断线）。', { providerChanged: true })
+    }
+    if (diff.providerChanged) {
+      safeLog('warn', 'provider 配置变化：新 apiKey/baseUrl 已写入 deck provider' + (modelFanout ? '，新 model 已扇出至全部存活 bot（updateBot，不碰连接）' : '') + '；在场 runner 为启动期快照，将于各 bot 下次重启时生效（本次不主动断线）。', { providerChanged: true })
     }
     current = nextCfg
     return report

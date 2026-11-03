@@ -3,7 +3,7 @@
 // 假 logger（只记账）、temp-dir 态存储（绝不写进仓库树）。brief Step 1 的六条用例名
 // 逐字保留；其余钉接线面：schedule「配了才传」、R19 两条日志、R20 有效房、R24 透传、
 // 孤儿两段账目相加（不是二选一）、A1 key 流向、sink 免疫（Task 1 遗留）。
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -129,12 +129,10 @@ function setup(cfg, extra) {
     path: inner.path,
   }
   const log = x.logger || fakeLogger()
-  // 可控假钟：deck 的 lifetime 落盘节流（10s 窗口）按 now() 判定，测试要能把窗口推过去
-  let clock = 1730000000000
-  const now = x.now || (() => clock)
-  const advance = (ms) => {
-    clock += ms
-  }
+  // 固定假钟：boot 期所有 persist 的 lastPersistAt 同刻，10s 节流窗天然处于"未冲刷"态
+  // （审查轮 2 #3：原 advance 推移缝已删——其最后一个调用点在 R27 捆绑①改造后消失，
+  // trailing 迟到落盘的时序改由 vi fake timers 精确驱动）
+  const now = x.now || (() => 1730000000000)
   const WebSocketImpl =
     x.WebSocketImpl ||
     function NoRealWS() {
@@ -153,7 +151,7 @@ function setup(cfg, extra) {
         }
   const host = createDaemonHost({ cfg, store, logger: log, now, WebSocketImpl, sleep, createRunner })
   startedHosts.push(host)
-  return { host, store, dir, log, calls, WebSocketImpl, sleep, advance, writes }
+  return { host, store, dir, log, calls, WebSocketImpl, sleep, writes }
 }
 
 function parsedWrites(writes) {
@@ -503,6 +501,69 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
     expect(ctx.calls.opts.length).toBe(2) // 仍只有 boot 期两个 runner 快照
   })
 
+  it('审查#1 回归：未校验直连路径把 model 改成空串时，扇出值守卫兜住——存活 bot 的 model 不许变 undefined', async () => {
+    // config.js:179-180 经 validateConfig 不可能给出空 model；这条钉的是**绕过校验直连**
+    // 宿主的文档化路径。deck.updateBot 对 'model' in patch 就写（deck.js:276-281），
+    // 无守卫则 undefined 毒死**全部**存活 bot 的下次启动（runner.js:413 配置缺失：model）。
+    const ctx = setup(validCfg())
+    await ctx.host.boot()
+    const next = validCfg()
+    next.provider = Object.assign({}, next.provider, { model: '' })
+    const report = await ctx.host.converge(next)
+    expect(report.providerChanged).toBe(true)
+    expect(ctx.log.rec.warn.some((e) => e.msg.includes('已扇出'))).toBe(false) // 没扇出就不许宣称扇出
+    const docs = parsedWrites(ctx.writes)
+    const last = docs[docs.length - 1]
+    expect(last.bots.map((b) => [b.id, b.model]).sort()).toEqual([
+      ['aqin', 'deepseek-chat'],
+      ['lixiao', 'deepseek-chat'],
+    ])
+  })
+
+  it('审查#2：combined converge（limits 与 provider 同时变）→ 两条 warn 各说各话，provider 线不被 else-if 吞', async () => {
+    const ctx = setup(validCfg({ limits: { globalHourlyMessages: 100 } }))
+    await ctx.host.boot()
+    const next = validCfg({
+      limits: { globalHourlyMessages: 50 },
+      provider: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: SECRET2, model: 'kimi-k2' },
+    })
+    const report = await ctx.host.converge(next)
+    expect(report.limitsChanged).toBe(true)
+    expect(report.providerChanged).toBe(true)
+    expect(report.restartRequired).toBe(true)
+    expect(ctx.log.rec.warn.filter((e) => e.msg.includes('limits')).length).toBe(1)
+    expect(ctx.log.rec.warn.filter((e) => e.msg.includes('provider 配置变化')).length).toBe(1)
+    expect(ctx.host.snapshot().meta.restartRequired).toBe(true)
+    // 扇出照常（model 非空合法值）：净化前载荷两端都是 kimi-k2
+    const docs = parsedWrites(ctx.writes)
+    expect(docs[docs.length - 1].bots.map((b) => [b.id, b.model]).sort()).toEqual([
+      ['aqin', 'kimi-k2'],
+      ['lixiao', 'kimi-k2'],
+    ])
+  })
+
+  it('审查#3：删除后 trailing 节流 persist 迟到落盘 → 孤儿账目不二次折叠（精确保持 2/1，不是二选一也不是翻倍）', async () => {
+    const ctx = setup(validCfg())
+    await ctx.host.boot()
+    optsOf(ctx.calls, 'aqin').onEvent('nick', { nick: 'ANON-Z9X' })
+    vi.useFakeTimers()
+    try {
+      // 时钟不动 → 这笔账停在 10s 节流窗内的 trailing timer 上
+      optsOf(ctx.calls, 'aqin').onState({ session: { promptTokens: 2, completionTokens: 1, messages: 1 } })
+      const bs = makeRaw().bots
+      await ctx.host.converge(validCfg({ bots: [bs[0]] })) // 宿主 persist 先冲刷 → 删除 → 已折叠一次
+      expect(ctx.store.readOrphans().aqin).toEqual({ nick: 'ANON-Z9X', lifetime: { promptTokens: 2, completionTokens: 1 } })
+      const writesBefore = ctx.writes.length
+      vi.advanceTimersByTime(10000) // trailing persist 迟到触发
+      expect(ctx.writes.length).toBeGreaterThan(writesBefore) // 确实又写了一次
+      // 二次折叠会把它记成 4/2 或复活 aqin 的消失事件——两头都必须纹丝不动
+      expect(ctx.store.readOrphans().aqin).toEqual({ nick: 'ANON-Z9X', lifetime: { promptTokens: 2, completionTokens: 1 } })
+      expect(readRawDoc(ctx.store).orphans.aqin).toEqual({ nick: 'ANON-Z9X', lifetime: { promptTokens: 2, completionTokens: 1 } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('converge 后 ownerNick 读取即取新值（getOwnerNick 是活引用，不是 boot 快照）', async () => {
     const ctx = setup(validCfg())
     await ctx.host.boot()
@@ -522,7 +583,7 @@ describe('snapshot 与观测汇（Task 1 的端口在此接线）', () => {
     expect(s).not.toContain(SECRET.slice(0, 10))
     expect(s).not.toContain(SECRET.slice(-10))
     expect(s).not.toContain('apiKey')
-    // 形状钉住（Task 10/P3 消费面）：每 bot 八字段 + meta 四键
+    // 形状钉住（Task 10/P3 消费面）：每 bot 八字段 + meta 六键（R28 摘要已按实现改齐）
     const lixiao = ctx.host.snapshot().bots.find((b) => b.id === 'lixiao')
     expect(Object.keys(lixiao).sort()).toEqual(['hourCount', 'id', 'lifetime', 'name', 'nick', 'room', 'session', 'status'])
     expect(lixiao.session).toEqual({ promptTokens: 0, completionTokens: 0, messages: 0 })
