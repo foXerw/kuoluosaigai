@@ -37,13 +37,20 @@
 // 会在 24/7 进程里升级成 unhandled rejection。所有 logger 调用一律过 safeLog 吞抛——
 // logger 死了没人能记下它死了，但 daemon 不能陪葬。
 //
-// —— limits 变化：defer + 显式告知（对照 brief 括注「不重启 bot，只重算闸」）——
-// gate/hourAccountor 在 deck 构造期一次建成，core 没有任何热更新 API；「重算闸」在
-// 当前 core 上不可实现，而重启 deck = 全体掉线，直接违反 A4 的「不重启 bot」。
-// 本任务的取舍：bot 面一律不动（A4 保住），limitsChanged 如实进 Report、restartRequired
-// 标记 + warn 级日志告知「daemon 重启后生效」（配置不丢：重启 boot 自然带上）。
-// provider 与 changed 字段的同类局限（runner 启动期快照）用 needsBotRestart 标注。
-// 若裁定要求热生效，需 core 开 gate 重建口——已写进报告待裁。
+// —— limits/serverUrl 变化：defer + 显式告知（brief 括注 + 裁定 R27①）——
+// gate/hourAccountor 与 wsUrl 都在 deck 构造期冻进闭包，core 没有任何热更新 API；
+// 「重算闸」在当前 core 上不可实现，而重启 deck = 全体掉线，直接违反 A4 的
+// 「不重启 bot」。取舍：bot 面一律不动（A4 保住），limitsChanged/serverUrlChanged
+// 如实进 Report、restartRequired 标记 + warn 级日志告知「daemon 重启后生效」
+// （配置不丢：重启 boot 自然带上）；且 meta.restartRequired 是**粘滞位**（R26 完成
+// 条件），只由进程重启清除——后续无变化的 converge 不许把它洗掉。
+// provider 的同类局限分两半（R27②）：model 实为 bot 字段，providerChanged 且 model
+// 有变时扇出 updateBot 到**全部存活 bot**（changed ∪ unchanged；updateBot 不碰 runner，
+// A4 不破）；apiKey/baseUrl 与改过的人格参数是 runner 启动期快照，用 needsBotRestart
+// 标注「下次 bot 重启生效」。若裁定要求闸热生效，需 core 开 gate 重建口——报告待裁。
+// 热移除先 deck.persist() 再 stop/remove（R27 捆绑①）：孤儿折叠取**上次落盘**基准，
+// deck 的 lifetime 有 10s 节流——不先冲刷，窗口内的 token 账会在 removeBot 删
+// store.lifetime[id] 的那一刻凭空蒸发，直接吃 Q2「state 拥有账目」的承诺。
 
 import os from 'node:os'
 
@@ -120,6 +127,9 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
   let current = cfg
   let deck = null
   let bootedAt = null
+  // R27 捆绑②（R26「不可能看漏」的完成条件）：需要**进程重启**才能兑现的变化是粘滞位，
+  // converge 置位、snapshot 常驻上报；只有换新 host（进程重启语义）才回 false。
+  let pendingRestart = false
   let deviceId = null
   try {
     deviceId = os.hostname()
@@ -204,6 +214,7 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
     const wanted = new Set(current.bots.map((b) => b.id))
     for (const item of deck.bots.slice()) {
       if (wanted.has(item.id)) continue
+      deck.persist() // 与 converge 删除同款写序：先冲刷在账的 lifetime，再 stop/remove
       deck.stopBot(item.id)
       deck.removeBot(item.id)
       orphanWarn(item.id, 'boot 调和')
@@ -241,14 +252,14 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
     const diff = diffConfigs(current, nextCfg)
     const prevProv = current.provider || {}
     const nextProv = nextCfg.provider || {}
-    const providerChanged =
-      prevProv.baseUrl !== nextProv.baseUrl ||
-      prevProv.model !== nextProv.model ||
-      resolveApiKey(prevProv) !== resolveApiKey(nextProv)
+    const modelChanged = diff.providerChanged && prevProv.model !== nextProv.model
 
     // removed 先落地：腾 MAX_BOTS 名额，且后续 add/changed 的 persist 不会把已删 bot
-    // 的孤儿收拢顺序搞乱。
+    // 的孤儿收拢顺序搞乱。写序（R27 捆绑①）：persist 冲刷先于 stop/remove——deck 对
+    // lifetime 有 10s 节流（trailing），而 removeBot 先删 store.lifetime[id] 再 persist，
+    // 不先冲刷的话节流窗内的 token 账连孤儿都进不去，凭空蒸发（Q2 的账目半边）。
     for (const id of diff.removed) {
+      deck.persist()
       deck.stopBot(id) // 幂等：不在 running 也安全（stopBotInternal）
       deck.removeBot(id)
       orphanWarn(id, '热重载')
@@ -256,9 +267,16 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
 
     const orphans = store.readOrphans()
 
-    // provider 即时进 deck（updateProvider 带新 apiKey）；在场 runner 是启动期快照，
-    // 新值随各自下一次启动兑现——needsBotRestart 如实标注，不装「已生效」（R14 教训）。
-    if (providerChanged) ensureProvider(nextCfg)
+    // provider 即时进 deck（updateProvider 带新 apiKey/baseUrl）；model 是 **bot** 字段
+    // （core BOT_CFG_KEYS），R27② 扇出到全部存活 bot——updateBot 不碰 runner，A4 不破。
+    // 在场 runner 仍是启动期快照，新值随各自下一次启动兑现：needsBotRestart 如实标注，
+    // 不装「已生效」（R14 教训）。
+    if (diff.providerChanged) ensureProvider(nextCfg)
+    if (modelChanged) {
+      for (const item of deck.bots.slice()) {
+        deck.updateBot(item.id, { model: nextProv.model })
+      }
+    }
 
     for (const id of diff.added) {
       const bot = findBotCfg(nextCfg, id)
@@ -284,9 +302,7 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
         if (k === 'room') continue // 已由 switchBotRoom 处理
         patch[k] = nextBot[k] // undefined = 取消配置（hourlyBudget/rawPrompt 的未配语义）
       }
-      if (providerChanged && prevProv.model !== nextProv.model && isNonEmptyString(nextProv.model)) {
-        patch.model = nextProv.model
-      }
+      // model 不在这里补——上面已对全部存活 bot 扇出（R27②），changed 桶同样是幸存者
       if (Object.keys(patch).length > 0) deck.updateBot(id, patch)
     }
 
@@ -296,18 +312,22 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
       changed: diff.changed,
       unchanged: diff.unchanged,
       limitsChanged: diff.limitsChanged,
-      providerChanged,
-      // restartRequired：闸（gate/hourAccountor）构造期钉死，core 无热更新口——
-      // limits 变更本进程内只能「如实告知、重启兑现」（见文件头裁量）。
-      restartRequired: diff.limitsChanged,
-      // needsBotRestart：apiKey/baseUrl/model 与改过的人格参数是 runner 启动期快照，
-      // 随下一次逐 bot 重启兑现；在场连接一律不动（A4）。
-      needsBotRestart: providerChanged || diff.changed.length > 0,
+      serverUrlChanged: diff.serverUrlChanged,
+      providerChanged: diff.providerChanged,
+      // restartRequired：闸（gate/hourAccountor）与 wsUrl 都在 deck 构造期钉死，
+      // core 无热更新口——limits/serverUrl 变更本进程内只能「如实告知、重启兑现」
+      // （R27①：两者同类，要的是进程重启，不是 bot 重启；见文件头裁量）。
+      restartRequired: diff.limitsChanged || diff.serverUrlChanged,
+      // needsBotRestart：apiKey/baseUrl 与改过的人格参数是 runner 启动期快照，随下一次
+      // 逐 bot 重启兑现（model 已按 R27② 扇出进全部存活 bot 的 deck 配置）；连接不动（A4）。
+      needsBotRestart: diff.providerChanged || diff.changed.length > 0,
     }
-    if (diff.limitsChanged) {
-      safeLog('warn', 'limits 变化：闸在 deck 构造期建成、core 未提供热重算 API，' + '本次热重载不触碰任何 bot 连接；新 limits 将在 daemon 重启后生效。', { limitsChanged: true })
-    } else if (providerChanged) {
-      safeLog('warn', 'provider 配置变化：新 apiKey/baseUrl/model 已写入 deck，' + '在场 runner 为启动期快照，将于各 bot 下次重启时生效（本次不主动断线）。', { providerChanged: true })
+    if (report.restartRequired) pendingRestart = true // 粘滞位：只由进程重启清除
+    if (diff.limitsChanged || diff.serverUrlChanged) {
+      const what = diff.limitsChanged && diff.serverUrlChanged ? 'limits 与 serverUrl' : diff.limitsChanged ? 'limits' : 'serverUrl'
+      safeLog('warn', what + ' 变化：闸与 wsUrl 在 deck 构造期冻结、core 无热重算口，本次热重载不触碰任何 bot 连接；将在 daemon 重启后生效（status 的 restartRequired 将保持置位）。', { limitsChanged: diff.limitsChanged, serverUrlChanged: diff.serverUrlChanged })
+    } else if (diff.providerChanged) {
+      safeLog('warn', 'provider 配置变化：新 apiKey/baseUrl 已写入 deck provider' + (modelChanged ? '，新 model 已扇出至全部存活 bot（updateBot，不碰连接）' : '') + '；在场 runner 为启动期快照，将于各 bot 下次重启时生效（本次不主动断线）。', { providerChanged: true })
     }
     current = nextCfg
     return report
@@ -352,6 +372,9 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
         uptimeMs: bootedAt === null ? 0 : Math.max(0, now() - bootedAt),
         globalHourCount,
         generatedAt: now(), // Task 10 的「数据为 N 秒前」口径原料
+        // R27 捆绑②/R26：pending 进程重启的粘滞位——Task 10 的 status 唯一能看见它的面。
+        // converge 置位后不会被后续 converge 洗掉，只随新 host（进程重启语义）归零。
+        restartRequired: pendingRestart,
       },
       bots,
     }

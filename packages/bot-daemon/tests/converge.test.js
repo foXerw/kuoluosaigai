@@ -13,10 +13,10 @@ function bot(id, over) {
   )
 }
 
-function cfg(bots, limits) {
+function cfg(bots, limits, over) {
   const c = { name: 'lab-vm', provider: { baseUrl: 'https://x', apiKey: 'k', model: 'm' }, bots }
   if (limits !== undefined) c.limits = limits
-  return c
+  return Object.assign(c, over || {})
 }
 
 describe('diffConfigs（纯 diff，按 id 寻址）', () => {
@@ -29,6 +29,8 @@ describe('diffConfigs（纯 diff，按 id 寻址）', () => {
     expect(d.changed).toEqual(['b'])
     expect(d.unchanged).toEqual(['a'])
     expect(d.limitsChanged).toBe(false)
+    expect(d.serverUrlChanged).toBe(false) // R27：进 diff 的两位缺省不得虚报
+    expect(d.providerChanged).toBe(false)
     // 改 room 也归 changed
     const d2 = diffConfigs(cfg([bot('a')]), cfg([bot('a', { room: 'orbit7' })]))
     expect(d2.changed).toEqual(['a'])
@@ -90,6 +92,33 @@ describe('diffConfigs（纯 diff，按 id 寻址）', () => {
     expect(diffConfigs(cfg([bot('a', { hourlyBudget: 20 })]), cfg([bot('a')])).changed).toEqual(['a'])
     expect(diffConfigs(cfg([bot('a', { rawPrompt: 'x' })]), cfg([bot('a', { rawPrompt: 'x' })])).changed).toEqual([])
     expect(diffConfigs(cfg([bot('a', { hourlyBudget: 0 })]), cfg([bot('a', { hourlyBudget: 0 })])).unchanged).toEqual(['a'])
+  })
+
+  it('R27①：serverUrl 变化 → serverUrlChanged:true（与 limits 同类：要的是进程重启）；不串 bot 桶', () => {
+    const bots = [bot('a'), bot('b')]
+    const d = diffConfigs(cfg(bots, { startupQuietMs: 100 }), cfg(bots, { startupQuietMs: 100 }, { serverUrl: 'wss://other.example' }))
+    expect(d.serverUrlChanged).toBe(true)
+    expect(d.limitsChanged).toBe(false)
+    expect(d.providerChanged).toBe(false)
+    expect(d.added).toEqual([])
+    expect(d.removed).toEqual([])
+    expect(d.changed).toEqual([])
+    expect(d.unchanged).toEqual(['a', 'b'])
+    // 未配置 serverUrl ↔ 有值也算变更；两边都缺 → 不算
+    expect(diffConfigs(cfg(bots), cfg(bots)).serverUrlChanged).toBe(false)
+    expect(diffConfigs({ bots }, cfg(bots, undefined, { serverUrl: 'wss://x.dev' })).serverUrlChanged).toBe(true)
+  })
+
+  it('R27②：provider 任一字段变化 → providerChanged:true（键序无关）；model 单变也要出声（扇出前提）', () => {
+    const bots = [bot('a')]
+    const p2 = { apiKey: 'k', model: 'm2', baseUrl: 'https://x' }
+    expect(diffConfigs(cfg(bots), cfg(bots, undefined, { provider: p2 })).providerChanged).toBe(true)
+    const pSame = { model: 'm', baseUrl: 'https://x', apiKey: 'k' }
+    expect(diffConfigs(cfg(bots), cfg(bots, undefined, { provider: pSame })).providerChanged).toBe(false)
+    const d3 = diffConfigs(cfg(bots), cfg(bots, undefined, { provider: p2, serverUrl: 'ws://localhost:8080' }))
+    expect(d3.providerChanged).toBe(true)
+    expect(d3.serverUrlChanged).toBe(true)
+    expect(d3.unchanged).toEqual(['a'])
   })
 
   it('changedBotFields 列出且仅列出实际变化的键（undefined=取消配置的语义保留在补丁里）', () => {

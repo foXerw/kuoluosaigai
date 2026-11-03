@@ -1,8 +1,14 @@
 // Task 7：配置 diff —— diffConfigs 纯函数（热重载的动作集来源，先于接线测）。
 //
-// 契约（brief 钉死）：按 id 寻址（Q3）；changed = 除 id 外任一字段变；数组顺序变化
-// 不算变更（按 id 集合与字段比较，不是位置）；limits 变化单独成位 limitsChanged，
-// 不牵连任何 bot 桶（"不重启 bot"——闸的落地时机归宿主，见 host.js converge）。
+// 契约（brief + 裁定 R27 钉死）：按 id 寻址（Q3）；changed = 除 id 外任一字段变；
+// 数组顺序变化不算变更（按 id 集合与字段比较，不是位置）。三个"整机级"比较位：
+// - limitsChanged：闸配置变化单独成位，不牵连任何 bot 桶（"不重启 bot"——闸的
+//   落地时机归宿主，见 host.js converge）；
+// - serverUrlChanged（R27①）：wsUrl 在 deck 构造期冻进闭包，与 limits 同类——要的是
+//   **进程重启**而非 bot 重启。初稿计划盲在只比 bots+limits，且 current=nextCfg 会让
+//   该改动对之后每一次 diff 永久隐形、整条链没有一层能报出来；
+// - providerChanged（R27②）：provider 深比较（键序无关）——其中 model 实为 **bot**
+//   字段（core BOT_CFG_KEYS），宿主须扇出到全部存活 bot，见 host.js。
 // bots: [] 与三个 bot 的差异如实报 removed 三项：这是"用户真想全停"的合法表达，
 // 与"畸形读盘"（ConfigLoadError，Task 8 watcher 保留旧配置）的区分归异常分流，不归本函数。
 //
@@ -61,11 +67,21 @@ export function changedBotFields(prevBot, nextBot) {
   return keys
 }
 
+function urlOf(c) {
+  const v = c ? c.serverUrl : undefined
+  return v === undefined || v === null ? null : v
+}
+
+function providerOf(c) {
+  return c && c.provider ? c.provider : null
+}
+
 /**
  * 配置 diff（纯函数）。
- * @param {{ bots?: Array<{id:string}>, limits?: object }|null} prev
- * @param {{ bots?: Array<{id:string}>, limits?: object }|null} next
- * @returns {{ added: string[], removed: string[], changed: string[], unchanged: string[], limitsChanged: boolean }}
+ * @param {{ bots?: Array<{id:string}>, limits?: object, serverUrl?: string, provider?: object }|null} prev
+ * @param {{ bots?: Array<{id:string}>, limits?: object, serverUrl?: string, provider?: object }|null} next
+ * @returns {{ added: string[], removed: string[], changed: string[], unchanged: string[],
+ *   limitsChanged: boolean, serverUrlChanged: boolean, providerChanged: boolean }}
  *   四数组装 **id**（按 id 寻址，Q3）；added/changed/unchanged 沿 next 顺序，removed 沿 prev 顺序。
  */
 export function diffConfigs(prev, next) {
@@ -85,5 +101,8 @@ export function diffConfigs(prev, next) {
     if (!nextBots.has(id)) removed.push(id)
   }
   const limitsChanged = !limitsEqual(prev ? prev.limits : undefined, next ? next.limits : undefined)
-  return { added, removed, changed, unchanged, limitsChanged }
+  const serverUrlChanged = urlOf(prev) !== urlOf(next)
+  const providerChanged =
+    JSON.stringify(canonical(providerOf(prev))) !== JSON.stringify(canonical(providerOf(next)))
+  return { added, removed, changed, unchanged, limitsChanged, serverUrlChanged, providerChanged }
 }

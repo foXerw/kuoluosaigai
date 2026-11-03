@@ -83,6 +83,7 @@ function spyRunner(o) {
     o,
     started: 0,
     stopped: 0,
+    cleared: 0,
     rooms: [],
     start() {
       r.started++
@@ -93,7 +94,9 @@ function spyRunner(o) {
     switchRoom(roomId) {
       r.rooms.push(roomId)
     },
-    clearBuffer() {},
+    clearBuffer() {
+      r.cleared++
+    },
     getBuffer() {
       return []
     },
@@ -108,10 +111,23 @@ function spyRunner(o) {
   return r
 }
 
+// 写间谍：包一层 storage 端口，记录 deck 交给 setItem 的**原始载荷**（净化前形状——
+// bots 条目带 model 等 BOT_CFG_KEYS）。R27 的 model 扇出与 persist-先于-stop 只在这层可观测。
 function setup(cfg, extra) {
   const x = extra || {}
   const dir = x.dir || freshDir()
-  const store = x.store || createFileStateStore({ dir })
+  const inner = x.store || createFileStateStore({ dir })
+  const writes = []
+  const store = {
+    getItem: (k) => inner.getItem(k),
+    setItem: (k, v) => {
+      writes.push(v)
+      return inner.setItem(k, v)
+    },
+    removeItem: (k) => inner.removeItem(k),
+    readOrphans: () => inner.readOrphans(),
+    path: inner.path,
+  }
   const log = x.logger || fakeLogger()
   // 可控假钟：deck 的 lifetime 落盘节流（10s 窗口）按 now() 判定，测试要能把窗口推过去
   let clock = 1730000000000
@@ -137,7 +153,11 @@ function setup(cfg, extra) {
         }
   const host = createDaemonHost({ cfg, store, logger: log, now, WebSocketImpl, sleep, createRunner })
   startedHosts.push(host)
-  return { host, store, dir, log, calls, WebSocketImpl, sleep, advance }
+  return { host, store, dir, log, calls, WebSocketImpl, sleep, advance, writes }
+}
+
+function parsedWrites(writes) {
+  return writes.map((w) => JSON.parse(w))
 }
 
 function optsOf(calls, id) {
@@ -332,8 +352,9 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
     const ctx = setup(validCfg())
     await ctx.host.boot()
     optsOf(ctx.calls, 'aqin').onEvent('nick', { nick: 'ANON-Z9X' })
-    ctx.advance(11000) // 越过 deck 的 10s lifetime 落盘节流窗：孤儿收拢以**已落盘**文档为基准
     optsOf(ctx.calls, 'aqin').onState({ session: { promptTokens: 2, completionTokens: 1, messages: 1 } })
+    // 故意不推时钟：这笔账落在 deck 的 10s 节流窗**之内**、还没自己落盘——
+    // R27 捆绑①要求宿主在删除前显式 deck.persist()，孤儿折叠才拿得到它。
     const bs = makeRaw().bots
     const report = await ctx.host.converge(validCfg({ bots: [bs[0]] }))
     expect(report.removed).toEqual(['aqin'])
@@ -341,6 +362,11 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
     // 删除先停：runner.stop 确实被调（deck.removeBot 对遗留实例还会幂等再停一次）
     expect(ctx.calls.runners.aqin.stopped).toBeGreaterThanOrEqual(1)
     expect(ctx.store.readOrphans().aqin).toEqual({ nick: 'ANON-Z9X', lifetime: { promptTokens: 2, completionTokens: 1 } })
+    // persist 先于 stop/remove 的写序钉法：最后一次带 aqin 的落盘载荷必须已含它的账
+    const docs = parsedWrites(ctx.writes)
+    expect(docs[docs.length - 1].bots.some((b) => b.id === 'aqin')).toBe(false)
+    const lastWithAqin = docs.slice(0, -1).reverse().find((d) => d.bots.some((b) => b.id === 'aqin'))
+    expect(lastWithAqin.lifetime.aqin).toEqual({ promptTokens: 2, completionTokens: 1 })
     // R19②：warn 级 ORPHAN，点名 id 且告知身份与账目保留在 state
     expect(ctx.log.rec.warn.some((e) => e.msg.includes('ORPHAN') && e.msg.includes('aqin'))).toBe(true)
     expect(ctx.log.rec.warn.some((e) => e.msg.includes('ORPHAN') && e.msg.includes('state'))).toBe(true)
@@ -415,6 +441,39 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
     expect(ctx.log.rec.warn.some((e) => e.msg.includes('limits') && e.msg.includes('重启'))).toBe(true)
   })
 
+  it('R27①：converge 换 serverUrl → serverUrlChanged 如实上报、warn 告知需重启、bot 连接一律不动', async () => {
+    const ctx = setup(validCfg())
+    await ctx.host.boot()
+    const report = await ctx.host.converge(validCfg({ serverUrl: 'ws://localhost:8080' }))
+    expect(report.serverUrlChanged).toBe(true)
+    expect(report.limitsChanged).toBe(false)
+    expect(report.added).toEqual([])
+    expect(report.removed).toEqual([])
+    expect(report.changed).toEqual([])
+    expect(report.restartRequired).toBe(true) // 与 limits 同类：进程重启，不是 bot 重启
+    for (const r of Object.values(ctx.calls.runners)) {
+      expect(r.started).toBe(1)
+      expect(r.stopped).toBe(0)
+    }
+    expect(ctx.log.rec.warn.some((e) => e.msg.includes('serverUrl') && e.msg.includes('重启'))).toBe(true)
+  })
+
+  it('R27 捆绑②（R26 完成条件）：pending 重启是粘滞的 meta 位——后续无变化的 converge 不洗掉，只由进程重启（新 host）清除', async () => {
+    const ctx = setup(validCfg({ limits: { globalHourlyMessages: 100 } }))
+    await ctx.host.boot()
+    expect(ctx.host.snapshot().meta.restartRequired).toBe(false)
+    await ctx.host.converge(validCfg({ limits: { globalHourlyMessages: 50 } }))
+    expect(ctx.host.snapshot().meta.restartRequired).toBe(true)
+    // 再来一次纯无变化的 converge：粘滞位不许被抹
+    const noop = await ctx.host.converge(validCfg({ limits: { globalHourlyMessages: 50 } }))
+    expect(noop.limitsChanged).toBe(false)
+    expect(noop.restartRequired).toBe(false)
+    expect(ctx.host.snapshot().meta.restartRequired).toBe(true)
+    // 新 host = 进程重启语义：复位为 false
+    const fresh = setup(validCfg({ limits: { globalHourlyMessages: 50 } }))
+    expect(fresh.host.snapshot().meta.restartRequired).toBe(false)
+  })
+
   it('converge provider 变化 → deck provider 即时更新（盘上 baseUrl 变、key 永不落盘），report 如实标注生效时机', async () => {
     const ctx = setup(validCfg())
     await ctx.host.boot()
@@ -430,6 +489,18 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
     expect(raw).not.toContain(SECRET2) // 新 key 同样被 Task 5 剥离
     expect(ctx.log.rec.warn.some((e) => e.msg.includes('provider') && e.msg.includes('生效'))).toBe(true)
     expect(JSON.stringify(ctx.host.snapshot())).not.toContain(SECRET2)
+    // R27②：model 扇出到**全部存活 bot**（含未变更的 aqin）——deck 写载荷（净化前）可观测
+    const docs = parsedWrites(ctx.writes)
+    const last = docs[docs.length - 1]
+    expect(last.bots.map((b) => [b.id, b.model]).sort()).toEqual([['aqin', 'kimi-k2'], ['lixiao', 'kimi-k2']])
+    // 且走的是 updateBot：不 stop/start、不切房、不清缓冲、不新造 runner（A4）
+    for (const r of Object.values(ctx.calls.runners)) {
+      expect(r.started).toBe(1)
+      expect(r.stopped).toBe(0)
+      expect(r.rooms.length).toBe(0)
+      expect(r.cleared).toBe(0)
+    }
+    expect(ctx.calls.opts.length).toBe(2) // 仍只有 boot 期两个 runner 快照
   })
 
   it('converge 后 ownerNick 读取即取新值（getOwnerNick 是活引用，不是 boot 快照）', async () => {
@@ -455,9 +526,10 @@ describe('snapshot 与观测汇（Task 1 的端口在此接线）', () => {
     const lixiao = ctx.host.snapshot().bots.find((b) => b.id === 'lixiao')
     expect(Object.keys(lixiao).sort()).toEqual(['hourCount', 'id', 'lifetime', 'name', 'nick', 'room', 'session', 'status'])
     expect(lixiao.session).toEqual({ promptTokens: 0, completionTokens: 0, messages: 0 })
-    expect(['deviceId', 'name', 'uptimeMs', 'globalHourCount', 'generatedAt']).toEqual(
+    expect(['deviceId', 'name', 'uptimeMs', 'globalHourCount', 'generatedAt', 'restartRequired']).toEqual(
       expect.arrayContaining(Object.keys(ctx.host.snapshot().meta)),
     )
+    expect(ctx.host.snapshot().meta.restartRequired).toBe(false)
   })
 
   it('Q7 转发：runner error/warn → logger.error/warn 且载荷带 botId；deck 级 warn 无 botId 键可区分', async () => {
