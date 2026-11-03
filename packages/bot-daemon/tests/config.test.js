@@ -307,3 +307,41 @@ describe('loadConfig：ESM 加载与类型化失败（Task 8 watcher 的分流�
       })
   })
 })
+
+// R24（Task 3b）：hourlyBudget 不是「存在但不生效的旋钮」——配置层的透传语义在
+// 这里钉死（下游消费链：Task 7 addBot → deck.normalizeCfg 保留 → runner 按
+// Number.isFinite 决定是否把 params.hourlyCap 交给 createRhythm）。
+describe('R24 bots[].hourlyBudget：透传与校验（已接线，非摆设）', () => {
+  function rawWithBudget(budget) {
+    const raw = minimalRaw()
+    raw.bots[0].hourlyBudget = budget
+    return raw
+  }
+
+  it('合法值（含 0）原样进 cfg.bots；缺失 → 不设该键——「未配=缺省 30」与「0=点名外一律不发」可区分', () => {
+    const raw = minimalRaw()
+    raw.bots[0].hourlyBudget = 20
+    raw.bots.push({ id: 'aqiang', name: '阿强', persona: 'p', room: 'alpha1', hourlyBudget: 0 })
+    raw.bots.push({ id: 'akuan', name: '阿宽', persona: 'p', room: 'beta22' })
+    const r = validateConfig(raw)
+    expect(r.ok).toBe(true)
+    expect(r.cfg.bots[0].hourlyBudget).toBe(20)
+    expect(r.cfg.bots[1].hourlyBudget).toBe(0)
+    expect('hourlyBudget' in r.cfg.bots[2]).toBe(false) // 缺失 ≠ 0：键都不出现
+  })
+
+  it('负数 / 字符串 / NaN / Infinity → 拒绝且错误以 bots[0].hourlyBudget 开头', () => {
+    for (const bad of [-1, '20', NaN, Infinity]) {
+      const r = validateConfig(rawWithBudget(bad))
+      expect(r.ok).toBe(false)
+      expect(r.errors.some((e) => e.startsWith('bots[0].hourlyBudget'))).toBe(true)
+    }
+  })
+
+  it('hourlyBudget=0 是合法配置不是错误（≥0 边界放行——0 有独立语义）', () => {
+    const r = validateConfig(rawWithBudget(0))
+    expect(r.ok).toBe(true)
+    expect(r.errors).toEqual([])
+    expect(r.cfg.bots[0].hourlyBudget).toBe(0)
+  })
+})

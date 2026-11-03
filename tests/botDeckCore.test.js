@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import { createNullLease, createDeck, HEARTBEAT_MS, HOUR_MS } from 'kuoluosaigai-bot-core'
+import { createNullLease, createDeck, CONFIG_KEY, SCHEMA_VERSION, HEARTBEAT_MS, HOUR_MS } from 'kuoluosaigai-bot-core'
 
 // Mapish —— createTabLease 的 storage 注入契约就是 {getItem,setItem,removeItem}
 // 三个方法（见 src/bots/lease.js），这里自建一个 Map 封装，不引新测试依赖。
@@ -648,6 +648,75 @@ describe('globalHourlyMessages 全局小时闸（P1 Task 3 / §12）', () => {
     await deck.startBot('bot-0')
     expect(deck.globalHourCount).toBe(2)
     expect(typeof deck.globalHourCount).toBe('number')
+    deck.dispose()
+  })
+})
+
+// —— R24（Task 3b）：每 bot 小时预算 hourlyBudget 进 deck 生命周期三面 ——
+// normalizeCfg（保留语义：缺失/非有限 → **不设该键**，null 也是「缺失」——R17 pick
+// undefined→null 陷阱）、persist 往返（加性字段：SCHEMA_VERSION 保持 1，老载荷照读）、
+// makeRunnerOpts 快照（runner 拿到的 bot 形状，即「params 当且仅当」的上游入料面）。
+describe('R24 hourlyBudget：normalizeCfg / persist 往返 / runner 快照', () => {
+  it('normalizeCfg：配了（含 0）原样保留；缺失或 null/NaN/字符串 → 不设该键——「未配」与「0」可区分', () => {
+    const deck = createDeck({ storage: new Mapish() })
+    deck.addBot({ id: 'b1', name: 'A', roomId: 'nebula', hourlyBudget: 20 })
+    expect(deck.bots[0].hourlyBudget).toBe(20)
+    deck.addBot({ id: 'b2', name: 'B', roomId: 'nebula' })
+    expect('hourlyBudget' in deck.bots[1]).toBe(false)
+    deck.addBot({ id: 'b3', name: 'C', roomId: 'nebula', hourlyBudget: 0 })
+    expect(deck.bots[2].hourlyBudget).toBe(0) // 0 合法：这条 bot 除点名外一条不发
+    deck.addBot({ id: 'b4', name: 'D', roomId: 'nebula', hourlyBudget: null })
+    expect('hourlyBudget' in deck.bots[3]).toBe(false) // null 是「未配」不是 0（Number(null)=0 的 JS 陷阱）
+    deck.addBot({ id: 'b5', name: 'E', roomId: 'nebula', hourlyBudget: '20' })
+    expect('hourlyBudget' in deck.bots[4]).toBe(false) // 非有限值（字符串）不入库
+    expect(deck.bots.length).toBe(5) // MAX_BOTS=5 恰好容下，本用例不越界
+  })
+
+  it('persist 往返：带 hourlyBudget 的 bot 重载后仍在；未配的读回是「未设」不是 0；老载荷缺键照常载入（SCHEMA_VERSION 保持 1）', () => {
+    const storage = new Mapish()
+    const d1 = createDeck({ storage })
+    d1.addProvider({ id: 'p1', name: 'DS', baseUrl: 'https://x.example', apiKey: 'sk-t' })
+    d1.addBot({ id: 'b1', name: 'A', roomId: 'nebula', providerId: 'p1', hourlyBudget: 20 })
+    d1.addBot({ id: 'b2', name: 'B', roomId: 'nebula', providerId: 'p1' })
+    d1.addBot({ id: 'b3', name: 'C', roomId: 'nebula', providerId: 'p1', hourlyBudget: 0 })
+    expect(SCHEMA_VERSION).toBe(1) // 加性可选字段——schema 不 bump（本任务红线）
+    const payload = JSON.parse(storage.getItem(CONFIG_KEY))
+    expect(payload.version).toBe(1)
+    expect(payload.bots[0].hourlyBudget).toBe(20)
+    expect(payload.bots[1].hourlyBudget).toBeNull() // pick 的 undefined→null 序列化形状（R17）
+    expect(payload.bots[2].hourlyBudget).toBe(0)
+    const d2 = createDeck({ storage }) // 从盘重载入
+    expect(d2.bots[0].hourlyBudget).toBe(20)
+    expect('hourlyBudget' in d2.bots[1]).toBe(false) // null 读回「未设」——与 0 分流
+    expect(d2.bots[2].hourlyBudget).toBe(0)
+    // 本任务之前写盘的老载荷：bots 条目完全不含 hourlyBudget 键
+    storage.setItem(CONFIG_KEY, JSON.stringify({
+      version: 1,
+      providers: [{ id: 'p1', name: 'DS', baseUrl: 'https://x.example', apiKey: 'sk-t' }],
+      bots: [{ id: 'b1', name: '小李', persona: 'p', chattiness: 50, providerId: 'p1', model: 'm', temperature: 0.9, rawPrompt: '', roomId: 'nebula', nick: null }],
+      lifetime: {},
+    }))
+    const d3 = createDeck({ storage })
+    expect(d3.bots.length).toBe(1) // 老载荷照常载入，不因新字段被拒
+    expect('hourlyBudget' in d3.bots[0]).toBe(false) // 老 bot = 未配 = 缺省 cap 30
+    expect(d3.bots[0].name).toBe('小李')
+  })
+
+  it('makeRunnerOpts 快照：hourlyBudget=20/0 原样进 bot 快照、未配为 null——runner 侧「有没有」与「是不是 0」在入料处即可判', async () => {
+    const snaps = []
+    const deck = createDeck({
+      storage: new Mapish(),
+      deps: { createRunner: (o) => { snaps.push(o.bot); return fakeRunner() } },
+    })
+    deck.addBot({ id: 'b1', name: 'A', roomId: 'nebula', hourlyBudget: 20 })
+    deck.addBot({ id: 'b2', name: 'B', roomId: 'nebula' })
+    deck.addBot({ id: 'b3', name: 'C', roomId: 'nebula', hourlyBudget: 0 })
+    expect(await deck.startBot('b1')).toBe(true)
+    expect(await deck.startBot('b2')).toBe(true)
+    expect(await deck.startBot('b3')).toBe(true)
+    expect(snaps[0].hourlyBudget).toBe(20)
+    expect(snaps[1].hourlyBudget).toBe(null) // pick 归一空——Number.isFinite(null)=false → 不覆盖 hourlyCap
+    expect(snaps[2].hourlyBudget).toBe(0) // 0 不被 null 化——Number.isFinite(0)=true → hourlyCap=0
     deck.dispose()
   })
 })

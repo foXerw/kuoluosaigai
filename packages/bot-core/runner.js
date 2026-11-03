@@ -61,7 +61,8 @@ function between(rng, [lo, hi]) {
  * 创建单 bot 编排器。
  * @param {{
  *   bot: { id: string, name: string, persona: string, chattiness: number, model: string,
- *          temperature: number, rawPrompt?: string, roomId: string, nick?: string|null },
+ *          temperature: number, rawPrompt?: string, roomId: string, nick?: string|null,
+ *          hourlyBudget?: number|null }, // R24：有限值 → rhythm params.hourlyCap；null/缺省 → 30
  *   provider: { baseUrl: string, apiKey: string },
  *   wsUrl: string,
  *   getOwnerNick?: () => string|null,
@@ -423,7 +424,14 @@ export function createBotRunner({
     errorText = null
     rateStreak = 0
     joinErrors = 0
-    rhythm = createRhythm({ rng, now, chattiness: bot.chattiness })
+    // R24（Task 3b）：每 bot 小时预算透传——配了有限 hourlyBudget 才浅覆盖 rhythm 的
+    // hourlyCap；未配（快照里是 null——deck 的 pick 把 undefined 映射成 null，R17）
+    // 连 params 键都不出现 → 缺省 30。Number.isFinite 判别天然分流 null 与 0
+    // （0=合法语义「点名外一条不发」→ hourlyCap:0）。params 只改界限不改掷骰次数：
+    // 构造期 rng 消耗位数（streakLimit 首掷）与预算有无无关。
+    const rhythmOpts = { rng, now, chattiness: bot.chattiness }
+    if (Number.isFinite(bot.hourlyBudget)) rhythmOpts.params = { hourlyCap: bot.hourlyBudget }
+    rhythm = createRhythm(rhythmOpts)
     connection = createBotConnection({
       url: wsUrl,
       storedNick: nick,

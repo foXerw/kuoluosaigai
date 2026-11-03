@@ -283,6 +283,9 @@ export function validateConfig(raw) {
           errors.push(at + '.temperature: 必须是 ≥0 的有限数字')
         }
       }
+      // hourlyBudget 已接线（裁定 R24，core Task 3b）：Task 7 交 addBot →
+      // deck.normalizeCfg 保留 → runner 按存在与否传 createRhythm params.hourlyCap。
+      // 语义：缺省不写=沿用 rhythm 默认 30；0=合法（点名外一条不发）；两者不可混写。
       let hourlyBudget
       if ('hourlyBudget' in b && b.hourlyBudget !== undefined) {
         if (Number.isFinite(b.hourlyBudget) && b.hourlyBudget >= 0) {

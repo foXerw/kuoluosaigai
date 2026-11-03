@@ -63,7 +63,12 @@ export const PROVIDER_PRESETS = [
 ]
 
 const LIFETIME_PERSIST_MS = 10000 // lifetime 增量持久化节流窗口
-const BOT_CFG_KEYS = ['id', 'name', 'persona', 'chattiness', 'providerId', 'model', 'temperature', 'rawPrompt', 'roomId', 'nick']
+// hourlyBudget（裁定 R24，Task 3b 接通）：可选「每 bot 小时预算」，随快照进 persist 与
+// makeRunnerOpts；消费端在 runner（Number.isFinite 分支决定是否给 createRhythm 传
+// params.hourlyCap）。缺省=不限配=RHYTHM_DEFAULTS.hourlyCap 30；0=合法语义「点名外一条不发」。
+// ⚠️ R17 陷阱：pick 把「未配」映射成 null——normalizeCfg 因此对未配**不设键**，null 也按
+// 未配处理（Number(null)===0 的 JS 隐式转换会把「缺省 30」错变成「永不发言」）。
+const BOT_CFG_KEYS = ['id', 'name', 'persona', 'chattiness', 'providerId', 'model', 'temperature', 'rawPrompt', 'roomId', 'nick', 'hourlyBudget']
 const PROVIDER_KEYS = ['id', 'name', 'baseUrl', 'apiKey']
 const RT_MERGE_KEYS = ['status', 'error', 'nick', 'roomId', 'hourCount', 'rev']
 
@@ -484,7 +489,7 @@ export function createDeck({
   function normalizeCfg(c, fallbackId) {
     const chattiness = Number(c.chattiness)
     const temperature = Number(c.temperature)
-    return {
+    const cfg = {
       id: typeof c.id === 'string' && c.id ? c.id : String(fallbackId || ''),
       name: String(c.name ?? '').slice(0, 12),
       persona: String(c.persona ?? ''),
@@ -496,6 +501,11 @@ export function createDeck({
       roomId: typeof c.roomId === 'string' ? c.roomId : '',
       nick: typeof c.nick === 'string' && c.nick ? c.nick : null,
     }
+    // R24：hourlyBudget 语义=「配了才存在」。缺失/非有限（含 null——persist 对未配写盘的
+    // 形状，见 pick 的 undefined→null；Number(null) 是 0，绝不许走 Number 强转）→
+    // **不设键**，与显式 0（「点名外一条不发」）区分开；runner 按 Number.isFinite 分流。
+    if (Number.isFinite(c.hourlyBudget)) cfg.hourlyBudget = c.hourlyBudget
+    return cfg
   }
 
   function normalizeProvider(p, fallbackId) {

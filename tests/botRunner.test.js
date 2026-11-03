@@ -806,3 +806,135 @@ describe('createBotRunner', () => {
   })
 })
 
+// —— R24（Task 3b）：每 bot 小时预算 hourlyBudget → rhythm params.hourlyCap 透传 ——
+// 裁定 R24 的接线证明分两层：
+// - 入参形状（"当且仅当"）：本层用行为反证——配了 20 恰在第 21 条非点名停、未配的
+//   恰在第 31 条停（= 缺省 30 仍在，透传没把 hourlyCap 意外写成 undefined/null）、
+//   配 0 的非点名一条都不发（0 与「缺省」两个语义分流，R17 陷阱钉死）。
+//   runner 对 ./rhythm.js 是包内静态 import、core 的 exports map 只放行 "."（无子路径），
+//   vitest 无法从测试侧 mock 到 createRhythm 的调用入参——形状断言拆到
+//   botDeckCore.test.js 的 deps.createRunner 快照面 + 这里的 rng 逐值弹出面。
+// - rng 消耗位数：逐值弹出 mkRng（序列耗尽即抛）——配了预算与未配共用**同一序列**，
+//   两侧掷骰次数与落点必须逐毫秒一致（透传只改界限、不改骰数）。
+// - 全局闸与 per-bot cap 谁先满谁拦（两层独立，合流顺序在此钉死，不留给读代码）。
+describe('R24 hourlyBudget → rhythm hourlyCap 透传（Task 3b）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    StubSocket.instances = []
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // 一条完整「非点名命中→发送」周期：推进时钟越过 minGap → 发帧 → 冲刷管道
+  async function humanCycle(ctx, s, tRef, over = {}) {
+    tRef.t += 8001
+    ctx.setT(tRef.t)
+    s.emit(msgFrame(over))
+    await flush(10)
+  }
+  const sentMessages = (s) => framesOf(s).filter((f) => f.type === 'message').length
+
+  it('透传不多耗 rng：配 hourlyBudget=20 与未配的 bot 共用同一逐值弹出序列，掷骰次数与时序逐毫秒一致', async () => {
+    const seq = [0.5, 0, 0.5, 0.9, 0.5] // streak构造=8; prob 0<0.4 命中; think=5000; typing=1900; afk 不中
+    const a = makeRunner({ bot: { chattiness: 50, hourlyBudget: 20 }, rng: mkRng(seq), sleepMode: 'auto' })
+    const sa = land(a)
+    const b = makeRunner({ bot: { chattiness: 50 }, rng: mkRng(seq), sleepMode: 'auto' })
+    const sb = land(b)
+    const ta = { t: 0 }
+    const tb = { t: 0 }
+    await humanCycle(a, sa, ta)
+    await humanCycle(b, sb, tb)
+    // 两侧都恰好吃满 5 个值（第 6 次调用会抛）；若透传路径多掷任何骰（或把
+    // hourlyCap 挤掉了 streakLimit 首掷的位置），值会错位 → 睡眠毫秒不再相等
+    expect(a.patches.at(-1).hourCount).toBe(1)
+    expect(b.patches.at(-1).hourCount).toBe(1)
+    expect(sa.sent).toEqual(sb.sent) // 同帧同文——概率档/延迟档位未被 params 扰动
+  })
+
+  it('配了 hourlyBudget=20 的 bot：第 21 条非点名被 hourlyCap 拦（超限只回 mentions），点名照回', async () => {
+    // chattiness 100 + always(0.5)：真人档 0.4×1.8=0.72>0.5 恒命中、点名档 clamp 1.0 恒命中、
+    // afk 0.5≥0.15 恒不中、streak 恒 0——排除一切与小时预算无关的拦截变量
+    const ctx = makeRunner({ bot: { chattiness: 100, hourlyBudget: 20 }, rng: always(0.5), sleepMode: 'auto' })
+    const s = land(ctx)
+    const tRef = { t: 0 }
+    for (let i = 0; i < 20; i++) await humanCycle(ctx, s, tRef)
+    expect(sentMessages(s)).toBe(20)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(20)
+    await humanCycle(ctx, s, tRef) // 第 21 条：非点名 → 拦（不调 LLM、不发送）
+    expect(sentMessages(s)).toBe(20)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(20)
+    tRef.t += 8001
+    ctx.setT(tRef.t)
+    s.emit(msgFrame({ text: 'Nova 你怎么看' })) // 点名豁免小时预算（spec §7 只回点名）
+    await flush(10)
+    expect(sentMessages(s)).toBe(21)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(21)
+  })
+
+  it('未配 hourlyBudget 的 bot 行为与今天逐字节一致：第 31 条非点名才被缺省 30 拦', async () => {
+    const ctx = makeRunner({ bot: { chattiness: 100 }, rng: always(0.5), sleepMode: 'auto' })
+    const s = land(ctx)
+    const tRef = { t: 0 }
+    for (let i = 0; i < 30; i++) await humanCycle(ctx, s, tRef)
+    expect(sentMessages(s)).toBe(30)
+    await humanCycle(ctx, s, tRef) // 第 31 条非点名：缺省 cap=30 生效
+    expect(sentMessages(s)).toBe(30)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(30)
+    tRef.t += 8001
+    ctx.setT(tRef.t)
+    s.emit(msgFrame({ text: 'Nova 在吗' })) // 点名仍豁免
+    await flush(10)
+    expect(sentMessages(s)).toBe(31)
+  })
+
+  it('hourlyBudget=0 与「未配」必须可区分：0 的非点名一条都不发（且拦在掷概率骰之前，rng 只被构造消耗 1 次）', async () => {
+    const ctx = makeRunner({ bot: { chattiness: 50, hourlyBudget: 0 }, rng: mkRng([0.5, 0, 0.5, 0.9, 0.5]), sleepMode: 'auto' })
+    const s = land(ctx)
+    const tRef = { t: 0 }
+    await humanCycle(ctx, s, tRef) // 非点名：hourCount 0 ≥ cap 0 → decide 直接 null
+    expect(sentMessages(s)).toBe(0)
+    expect(ctx.fetchImpl).not.toHaveBeenCalled()
+    tRef.t += 8001
+    ctx.setT(tRef.t)
+    s.emit(msgFrame({ text: 'Nova 打个招呼' })) // 点名豁免：走完整管道
+    await flush(10)
+    expect(sentMessages(s)).toBe(1)
+    await humanCycle(ctx, s, tRef) // 再来非点名：1 ≥ 0 → 又静默
+    expect(sentMessages(s)).toBe(1)
+  })
+
+  it('④ 谁先满谁拦（per-bot 先满）：budget=1 时第 2 条非点名被 decide 拦——gate 根本不被询问（两层独立，不是 gate 兜底）', async () => {
+    const gate = { allowSpeak: vi.fn(() => true) } // 全局层永远放行
+    const ctx = makeRunner({ bot: { chattiness: 100, hourlyBudget: 1 }, rng: always(0.5), sleepMode: 'auto', gate })
+    const s = land(ctx)
+    const tRef = { t: 0 }
+    await humanCycle(ctx, s, tRef) // 第 1 条：per-bot 未满、gate 放行 → 发
+    expect(sentMessages(s)).toBe(1)
+    expect(gate.allowSpeak).toHaveBeenCalledTimes(1)
+    await humanCycle(ctx, s, tRef) // 第 2 条：per-bot 满 → decide 拦在 gate 之前
+    expect(sentMessages(s)).toBe(1)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+    expect(gate.allowSpeak).toHaveBeenCalledTimes(1) // 被拦的非点名**没**去问全局闸
+    tRef.t += 8001
+    ctx.setT(tRef.t)
+    s.emit(msgFrame({ text: 'Nova 点名你' })) // 点名越 per-bot cap，仍要过 gate → 第 2 次询问
+    await flush(10)
+    expect(sentMessages(s)).toBe(2)
+    expect(gate.allowSpeak).toHaveBeenCalledTimes(2)
+  })
+
+  it('④ 谁先满谁拦（全局先满）：per-bot 预算充足（5）但 gate 满 → 非点名照拦——per-bot 余额救不了全局满', async () => {
+    let left = 1 // 全局闸只放行 1 条
+    const gate = { allowSpeak: () => left-- > 0 }
+    const ctx = makeRunner({ bot: { chattiness: 100, hourlyBudget: 5 }, rng: always(0.5), sleepMode: 'auto', gate })
+    const s = land(ctx)
+    const tRef = { t: 0 }
+    await humanCycle(ctx, s, tRef)
+    expect(sentMessages(s)).toBe(1)
+    await humanCycle(ctx, s, tRef) // per-bot 才用了 1/5，全局已满 → 不发、不调 LLM
+    expect(sentMessages(s)).toBe(1)
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+  })
+})
+
