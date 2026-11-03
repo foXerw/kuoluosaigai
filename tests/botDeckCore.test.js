@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest'
-import { createNullLease, createDeck } from 'kuoluosaigai-bot-core'
+import { describe, it, expect, vi } from 'vitest'
+import { createNullLease, createDeck, HEARTBEAT_MS } from 'kuoluosaigai-bot-core'
 
 // Mapish —— createTabLease 的 storage 注入契约就是 {getItem,setItem,removeItem}
 // 三个方法（见 src/bots/lease.js），这里自建一个 Map 封装，不引新测试依赖。
@@ -168,3 +168,154 @@ function emittingRunner(o, events) {
   r.start = () => { for (const e of events) o.onEvent(e.t, e.payload) }
   return r
 }
+
+// —— schedule 刹车端口（P1 Task 2 / spec Q9 + §12）——
+// gate 本体语义（跨零点窗/fail-closed/点名放行）已由 botSchedule.test.js 钉死；
+// 这里只测 deck 接线面：不传 schedule → runner opts 连 gate 键都不出现（浏览器零
+// 变化）；传了 → 闲置发起被前置判定，心跳等簿记不受牵连。调度器用脚本化替身
+// （tick 恒判首候选中签）——窗口/骰子内部归 botRhythm 套件，本组关心 deck 开问
+// gate 的时序。墙钟基准取「无时区后缀」本地串，跨执行机时区稳定。
+describe('schedule 刹车端口（Q9+§12，daemon 注入、浏览器缺省不启用）', () => {
+  const at = (hhmm) => Date.parse(`2026-11-04T${hhmm}:00`)
+  const newRec = () => ({ pokes: [], ticks: [], hb: 0 })
+
+  function spyRunner(rec) {
+    const r = fakeRunner()
+    r.pokeIdle = (o) => rec.pokes.push(o === undefined ? null : o)
+    return r
+  }
+  function scriptedScheduler(rec) {
+    return () => ({
+      notifyActivity() {},
+      tick(cands) {
+        rec.ticks.push(cands.map((c) => c.id))
+        return cands.length ? cands[0].id : null
+      },
+    })
+  }
+  const heartbeatLease = (rec) => ({
+    acquire: async () => true,
+    release: () => {},
+    releaseAll: () => {},
+    heartbeat: () => { rec.hb += 1 },
+    isHeldElsewhere: () => false,
+    degraded: false,
+  })
+
+  // 统一起局：t 落在本地正午（默认无 quietHours 时任何用例都不会误触静默窗）
+  function deckWith(rec, over = {}) {
+    let t = typeof over.at === 'number' ? over.at : at('12:00')
+    const advance = (ms) => {
+      t += ms
+      vi.advanceTimersByTime(ms)
+    }
+    let optsSeen = null
+    const deck = createDeck({
+      storage: new Mapish(),
+      now: () => t,
+      lease: heartbeatLease(rec),
+      schedule: over.schedule,
+      deps: {
+        createRunner: (o) => {
+          optsSeen = o
+          return spyRunner(rec)
+        },
+        createScheduler: scriptedScheduler(rec),
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    return { deck, advance, nowT: () => t, getOpts: () => optsSeen }
+  }
+
+  it('createDeck 未配置 schedule → runner 收到的 gate 为 undefined（连键都不出现；浏览器默认不启用）', async () => {
+    const rec = newRec()
+    const { deck, getOpts } = deckWith(rec)
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(getOpts()).toBeTruthy()
+    expect('gate' in getOpts()).toBe(false)
+    expect(getOpts().gate).toBeUndefined()
+    deck.dispose()
+  })
+
+  it('传 schedule → runner 收到带 { quietNow, allowSpeak } 的 gate 对象', async () => {
+    const rec = newRec()
+    const { deck, getOpts } = deckWith(rec, { schedule: { quietHours: { from: '01:30', to: '08:00' } } })
+    expect(await deck.startBot('bot-0')).toBe(true)
+    expect(typeof getOpts().gate.allowSpeak).toBe('function')
+    expect(typeof getOpts().gate.quietNow).toBe('function')
+    deck.dispose()
+  })
+
+  it('回归护栏：不传 schedule → 冷场闲置照常发起（刹车缺省不咬人，既有语义不变）', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      const { deck, advance } = deckWith(rec)
+      expect(await deck.startBot('bot-0')).toBe(true)
+      advance(HEARTBEAT_MS * 4)
+      expect(rec.ticks).toEqual([['bot-0'], ['bot-0'], ['bot-0'], ['bot-0']])
+      expect(rec.pokes).toEqual([{ preRolled: true }, { preRolled: true }, { preRolled: true }, { preRolled: true }])
+      expect(rec.hb).toBe(4)
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('quietHours 覆盖当前墙钟 → 闲置不发起、心跳照打；出窗即自动解除', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      const { deck, advance, nowT } = deckWith(rec, {
+        at: at('03:00'),
+        schedule: { quietHours: { from: '01:30', to: '08:00' } },
+      })
+      expect(await deck.startBot('bot-0')).toBe(true)
+      advance(HEARTBEAT_MS * 4) // 03:01，窗内
+      expect(rec.ticks).toEqual([]) // 闲置发起整体跳过
+      expect(rec.pokes).toEqual([])
+      expect(rec.hb).toBe(4) // 刹车只拦「开口花钱」，不拦簿记
+      const target = at('08:15') // 逐班车推到出窗（to 不含 → 08:00 起放行）
+      while (nowT() < target) advance(HEARTBEAT_MS)
+      expect(rec.ticks.length).toBeGreaterThan(0)
+      expect(rec.pokes.length).toBeGreaterThan(0)
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('startupQuietMs：deck 构造后 N 分钟内闲置抑制，恰满 N 分钟的那班车解除', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      const { deck, advance } = deckWith(rec, { schedule: { startupQuietMs: 120000 } })
+      expect(await deck.startBot('bot-0')).toBe(true)
+      advance(HEARTBEAT_MS * 7) // 累计 105000 < 120000，仍静默
+      expect(rec.ticks).toEqual([])
+      expect(rec.pokes).toEqual([])
+      advance(HEARTBEAT_MS) // 第 8 班车恰满 120000 → 严格小于语义，此刻放行
+      expect(rec.ticks.length).toBe(1)
+      expect(rec.pokes).toEqual([{ preRolled: true }])
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('schedule 传空对象 → 建 gate 但恒不静默（配置了≠全静默；发起照常）', async () => {
+    vi.useFakeTimers()
+    try {
+      const rec = newRec()
+      const { deck, advance, getOpts } = deckWith(rec, { schedule: {} })
+      expect(await deck.startBot('bot-0')).toBe(true)
+      expect(typeof getOpts().gate.allowSpeak).toBe('function')
+      advance(HEARTBEAT_MS * 2)
+      expect(rec.ticks.length).toBe(2)
+      expect(rec.pokes.length).toBe(2)
+      deck.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

@@ -23,12 +23,19 @@
 //    {botId,...payload})（daemon logger 消费）；不注入即静默，浏览器侧零行为变化。
 // 5) 用量累计：onState.session 绝对值与基线差分增量写 lifetime；持久化节流至多每 10s
 //    一次（trailing 合并，内存即时更新）。
-// B18（Task 4 后拓扑）：core 内只 import ./rhythm ./runner ./timing；不 import vue、
+// 6) schedule 刹车（P1 Task 2 / Q9+§12）：宿主经 opts.schedule 注入静默窗
+//    （quietHours 本机墙钟窗 + startupQuietMs 刚上线窗），deck 建 createGate 并：
+//    onGlobalTick 闲置发起前置问 gate.allowSpeak(false)（静默窗整体跳过，心跳/
+//    簿记照常）、gate 经 makeRunnerOpts 透传给 runner 拦非点名回复与直调 pokeIdle。
+//    schedule 未配置 → 不建 gate、runner opts 连 gate 键都不出现（浏览器零变化）。
+//    globalHourlyMessages 属 Task 3 的 hourAccountor——本任务 gate 缺省不做全局拦截（R1）。
+// B18（Task 4 后拓扑）：core 内只 import ./rhythm ./runner ./schedule ./timing；不 import vue、
 //    不碰浏览器全局（reactive/lease/storage/主人昵称读取全由宿主注入）；
 //    不碰 useChat/roomCache/roomList。
 
 import { createIdleScheduler } from './rhythm.js'
 import { createBotRunner } from './runner.js'
+import { createGate } from './schedule.js'
 import { HEARTBEAT_MS } from './timing.js'
 
 export const CONFIG_KEY = 'kuoluosaigai:bots:v1'
@@ -98,6 +105,11 @@ export function createNullLease() {
  *   wsUrl?: string,
  *   rng?: () => number,
  *   now?: () => number,
+ *   schedule?: {
+ *     quietHours?: { from: string, to: string }, // 本机墙钟静默窗 'HH:MM'（跨零点正确；from===to 全时段）
+ *     startupQuietMs?: number,                   // 刚上线静默窗（startedAt = deck 构造时刻）
+ *     globalHourlyMessages?: number,             // Task 3 的 hourAccountor 消费；本任务不建全局闸（R1）
+ *   }, // Q9/§12 刹车：未配置 → 不建 gate，行为逐字节如现状（浏览器默认不启用）
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
  *     sleep?: Function, WebSocketImpl?: Function,
@@ -114,6 +126,7 @@ export function createDeck({
   wsUrl = '',
   rng = Math.random,
   now = Date.now,
+  schedule,
   deps = {},
 } = {}) {
   // storage 无默认值：缺失即抛（Task 4 替换表第 4 条——core 不摸浏览器全局）
@@ -121,6 +134,20 @@ export function createDeck({
 
   const createRunner = deps.createRunner || createBotRunner
   const createScheduler = deps.createScheduler || createIdleScheduler
+
+  // Q9/§12 schedule 刹车（P1 Task 2）：宿主显式传 schedule 才建 gate——不传即
+  // gate=null，runner opts 连 gate 键都不出现，浏览器路径逐字节不变。startedAt 取
+  // deck 构造时刻（daemon 冷启动即建 deck，「刚上线」语义天然对齐）；
+  // globalHourlyMessages 本任务不消费——createGate 缺 hourAccountor 即不做全局拦截（裁定 R1）。
+  let gate = null
+  if (schedule && typeof schedule === 'object') {
+    gate = createGate({
+      now,
+      quietHours: schedule.quietHours,
+      startupQuietMs: schedule.startupQuietMs,
+      startedAt: now(),
+    })
+  }
 
   const runners = new Map() // 非响应式：botId → runner 实例
   const schedulers = new Map() // roomId → idle scheduler
@@ -534,6 +561,9 @@ export function createDeck({
       sleep: deps.sleep,
       onState: (patch) => mergeState(item.id, patch),
       onEvent: (type, payload) => handleEvent(item.id, type, payload),
+      // Q9/§12：gate 仅在宿主传了 schedule 时出现；不传连键都不加（runner opts
+      // 形状与既往逐字节一致，浏览器零变化的另一半保证）。
+      ...(gate ? { gate } : {}),
     }
   }
 
@@ -644,6 +674,13 @@ export function createDeck({
     const rooms = currentRooms()
     for (const room of [...schedulers.keys()]) {
       if (!rooms.has(room)) schedulers.delete(room)
+    }
+    // Q9/§12 刹车前置判定（P1 Task 2）：静默窗内闲置发起整体跳过——调度器不 tick
+    // 即不洗牌不掷骰（rng 零消耗），窗状态原地冻结；出窗后下一班车自然恢复发起。
+    // 心跳、调度回收、maybeStopTick 等簿记不受牵连；gate=null（未配置 schedule）恒放行。
+    if (gate && !gate.allowSpeak(false)) {
+      maybeStopTick()
+      return
     }
     for (const room of rooms) {
       const sched = ensureScheduler(room)

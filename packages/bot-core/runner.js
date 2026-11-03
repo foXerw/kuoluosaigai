@@ -71,6 +71,9 @@ function between(rng, [lo, hi]) {
  *   onState?: (patch: object) => void,
  *   onEvent?: (type: 'activity'|'nick'|'stopped'|'error'|'warn', payload?: any) => void,
  *     // Q7 观测事件：'error' → {kind, message, fatal}；'warn' → {reason}（降级停用报因）
+ *   gate?: { allowSpeak: (mentions?: boolean) => boolean },
+ *     // Q9/§12 schedule 刹车（P1 Task 2）：deck 由 opts.schedule 建 createGate 透传；
+ *     // 缺省（浏览器/未配置）→ 现状行为逐字节不变
  * }} options
  * @returns {{ start: () => void, stop: (reason?: string) => void,
  *   switchRoom: (roomId: string) => void, clearBuffer: () => void,
@@ -90,6 +93,7 @@ export function createBotRunner({
   fetchImpl = globalThis.fetch,
   onState,
   onEvent,
+  gate, // Q9/§12 schedule 刹车端口（deck 注入；缺省 → 现状行为）
 }) {
   const buffer = createContextBuffer()
   const badge = `BOT·${String(bot.name ?? '').slice(0, 12)}` // 全局约束：人格名 ≤12 截断
@@ -234,7 +238,11 @@ export function createBotRunner({
       isFamily: fam.has(frame.nick) || String(frame.badge || '').startsWith('BOT·'),
       familyStreak: trailingFamilyStreak(buffer.all(), fam),
     })
-    if (decision) kick({ idle: false, thinkMs: decision.thinkMs, frame })
+    // Q9/§12 刹车（P1 Task 2）：decide 照常问 rhythm（冷却/streak/预算记账与掷骰
+    // 时序不变），命中后、kick 前问 gate——静默窗内非点名不开口（不调 LLM、不发送）。
+    // 点名放行由 gate.allowSpeak(true) 决定（Q9 精确化；Task 3 全局闸满时点名也拦）。
+    // gate 缺省 → 条件恒真，浏览器路径逐字节不变。
+    if (decision && (!gate || gate.allowSpeak(mentions))) kick({ idle: false, thinkMs: decision.thinkMs, frame })
   }
 
   // —— 单发言队列：speaking 布尔 + pendingJob 至多 1 ——
@@ -484,6 +492,10 @@ export function createBotRunner({
   function pokeIdle(opts = {}) {
     if (!started || !rhythm || !connection) return
     if (transport !== 'open') return // 连接未开：不发请求白烧 token（preRolled 同样保留此门禁）
+    // Q9/§12 刹车：闲置发起属「非点名主动开口」，静默窗内直接静默——放在掷骰之前，
+    // 不消耗 rng、不动 rhythm 状态。deck 的 onGlobalTick 已有同名前置判定，此处兜底
+    // 直调 pokeIdle 的路径（含 preRolled：tick 与 poke 之间恰好跨入窗内时宁默不烧）。
+    if (gate && !gate.allowSpeak(false)) return
     if (!opts.preRolled) {
       // B21 门禁：AFK/冷却/小时预算/最小间隔任一命中即静默（不掷 rollIdle、不消耗 rng）
       if (!rhythm.canInitiateIdle()) return

@@ -112,6 +112,7 @@ function makeRunner(opts = {}) {
     fetchImpl,
     onState: (p) => patches.push(p),
     onEvent: (t, payload) => events.push({ t, payload }),
+    ...(opts.gate ? { gate: opts.gate } : {}), // P1 Task 2：gate 端口透传位（缺省不加键）
   })
   const resolveSleep = () => {
     const s = sleepQ.shift()
@@ -750,6 +751,57 @@ describe('createBotRunner', () => {
     expect(ctx.events[0]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: true } })
     s.emit(msgFrame({ id: 'x', nick: 'ANON-O' }))
     expect(ctx.events[1]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: false } })
+  })
+
+  // —— gate 端口（P1 Task 2 / Q9+§12 静默刹车）——
+  // createGate 本体语义已由 botSchedule.test.js 钉死；本组只测 runner 消费面：
+  // 拦截发生在 decide 命中之后、kick 之前——rhythm 记账照常，「开口花钱」的动作停止。
+
+  it('gate 拦截非点名回复：decide 命中也不 kick——无 sleep、不调 LLM、不发消息；缓冲与 activity 照常', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5]), // streakLimit=8; prob 0<0.4 命中; think=5000——若无 gate 这条会 kick
+      gate: { allowSpeak: (mentions) => mentions }, // 静默窗模拟：点名放行、其余拦截
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+    s.emit(msgFrame({ id: 'g1', text: '今天天气不错' })) // 不含 bot 名 Nova → mentions=false
+    expect(ctx.events[0]).toEqual({ t: 'activity', payload: { roomId: 'roomA', family: false } })
+    expect(ctx.runner.getBuffer().map((f) => f.id)).toEqual(['g1']) // 刹车不拦观察
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([])
+    expect(ctx.fetchImpl).not.toHaveBeenCalled()
+    expect(framesOf(s)).toEqual([{ type: 'join', roomId: 'roomA' }])
+  })
+
+  it('gate 不拦点名：allowSpeak(true)=true → 全管道照常走到 LLM', async () => {
+    const ctx = makeRunner({ rng: always(0.5), gate: { allowSpeak: (mentions) => mentions } })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'g2', text: 'Nova 你说呢' })) // 含名 → mentions=true → decide 0.5<0.9 命中
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000])
+    ctx.resolveSleep()
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalled()
+  })
+
+  it('gate 拦闲置发起：pokeIdle 与 pokeIdle({preRolled:true}) 都静默且不掷骰（rng 只被构造消耗 1 次）', async () => {
+    const ctx = makeRunner({ rng: mkRng([0.5]), gate: { allowSpeak: () => false } })
+    land(ctx)
+    ctx.runner.pokeIdle()
+    ctx.runner.pokeIdle({ preRolled: true }) //  Deck 侧已问过 gate 的直发路径，runner 再兜底
+    expect(ctx.sleepQ).toEqual([])
+  })
+
+  it('gate 放行时 pokeIdle 走正常管道（think 进 sleep 队列）', async () => {
+    const ctx = makeRunner({ rng: mkRng([0.5, 0, 0.5]), gate: { allowSpeak: () => true } })
+    land(ctx)
+    ctx.runner.pokeIdle() // canInitiateIdle 0 掷；rollIdle 0<0.3 中；think 0.5→5000
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000])
+  })
+
+  it('gate 缺省 → 非点名照常回（回归护栏：新端口不改变默认路径）', async () => {
+    const ctx = makeRunner({ rng: mkRng([0.5, 0, 0.5]) })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'g3' }))
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000]) // 与首条既有用例同款命中时序
   })
 })
 
