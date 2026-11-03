@@ -358,7 +358,32 @@ it('releaseLock 由非持有者调用 → 不删他人锁')
 **Interfaces:**
 - Consumes: `createDeck({ storage: fileStateStore, lease: createNullLease(), reactiveImpl: (o) => o, getOwnerNick, wsUrl, now, deps: { WebSocketImpl, sleep, onEvent } })`；`deck.addProvider/addBot/startBot/stopBot/removeBot/switchBotRoom/updateBot/dispose`；Task 5 的 `readOrphans()`；Task 2/3 的 `schedule`
 - Produces:
-  - `diffConfigs(prev: Cfg, next: Cfg) -> { added: [], removed: [], changed: [], unchanged: [], limitsChanged: boolean }`（纯函数，按 `id` 寻址；`changed` = 除 `id` 外任一字段变；顺序变化不算变更）
+  - `diffConfigs(prev: Cfg, next: Cfg) -> { added: [], removed: [], changed: [], unchanged: [], limitsChanged: boolean, serverUrlChanged: boolean, providerChanged: boolean }`（纯函数，按 `id` 寻址；`changed` = 除 `id` 外任一字段变；顺序变化不算变更）
+  - **裁定 R27（Task 7 审查暴露的两处计划盲点，属本任务范围）**：
+    ①**`serverUrl` 必须进 diff**。本任务初稿只比 bots 与 limits，而 `wsUrl` 在 boot 时被冻进 deck 闭包
+    （`host.js:182`、core 侧 `makeRunnerOpts` 读闭包），converge 既不看也不报，加上
+    `current = nextCfg` 会让这次改动**对之后每一次 diff 都永久隐形**；而 Task 8 被规定
+    "业务动作一律交给 `host.converge`"——于是**整条链上没有任何一层能把它报出来**：
+    操作者把 daemon 指到另一台服务器，看到的是一次"成功热重载"，bot 却仍连在旧服务器上。
+    这正是实现体自己用来论证 limits 兜底合理的那条标准（"静默忽略违反 R11 精神"），
+    不能只对 limits 适用、对 serverUrl 失灵。修法：`converge` 内比 `current.serverUrl !== next.serverUrl`，
+    折进 `restartRequired` 与 warn（与 limits 同类：都需要**进程重启**，不是 bot 重启）。
+    ②**`provider.model` 变化要扇出到全部存活 bot**。`model` 在 core 里是 **bot** 字段
+    （`BOT_CFG_KEYS`），runner 从 bot 快照取（`runner.js:269`），而 `updateProvider` 只写
+    name/baseUrl/apiKey。只给 `diff.changed` 补 `model` 的话，**未变更 bot 的旧 model 会在进程内
+    一直陈旧**——连手动 stop/start 都还是旧值（boot 期的对齐才修得回来），而现有 warn 文案
+    却宣称"新 apiKey/baseUrl/model 已写入 deck"。修法：`providerChanged` 且 model 有变时，
+    把新 model 用 `updateBot` 打到**所有存活 bot**（changed ∪ unchanged；`updateBot` 不碰 runner，
+    因此不违反 A4），并把 warn 文案改准。
+  - **R27 附带捆绑（破例第二条，理由记档）**：Minor「热移除会丢 ≤10s 的 token 账」
+    （孤儿折叠取的是**上次落盘**的基准，而 deck 对 lifetime 有 10s 节流，`removeBot` 又先删
+    `store.lifetime[id]` 才 persist）与 Minor「pending 重启状态没有持久面」
+    （`snapshot()` 是 Task 10 唯一的宿主读数口，却没有粘滞的 `restartRequired`）——
+    前者直接吃 Q2 承诺的"账目"，后者是我 R26 那句"不可能看漏"的**完成条件本身**，
+    且都是**一行级**修改（removal 循环里 `deck.persist()` 先于 `stopBot`；`meta.restartRequired`
+    置位后只由进程重启清除）。把它们拆到终审等于让 Task 8-10 建在一个说谎的 Report 契约上。
+    仍**不**捆绑的：R20 rt 优先级缺 runner 侧用例、MAX_BOTS 拒绝项误报 `added`、
+    unchanged/buffer 只有聚合断言 → 全部 parked。
   - `createDaemonHost({ cfg, store, logger, now, WebSocketImpl, sleep }) -> { boot(): Promise<void>, converge(nextCfg): Promise<Report>, snapshot(): object, shutdown(): void }`（`converge` 内部调 `diffConfigs` 得动作集，再由本任务决定每类动作怎么落地）
   - `boot()`：`deck.load()` → 按 `cfg.bots[].id` 建/更新 provider 与 bot（`addBot` 传**显式 id**，Q3）→ 逐个 `startBot(id)`；`orphans` 里同名 id 的 `nick` 经 `updateBot(id, {nick})` 复用（身份跨重启延续）
   - **裁定 R19（Task 5 审查 ⚠️ 项归位）**：Q2 明文"保留 state 条目但**打 ORPHAN 日志**（防误删配置即丢身份）"。
