@@ -394,7 +394,13 @@ it('releaseLock 由非持有者调用 → 不删他人锁')
     另记 Task 5 审查的连带事实：`computeOrphans` 从缓存基准重播，所以**手工删 `state.json` 里的孤儿条目不会生效**
     （下一次写就复活）——若 Task 10 的 `status` 要暴露孤儿，须一并给出一条清理途径。
   - provider 的 `apiKey` 只在这一步从 `cfg.provider.apiKey ?? process.env` 注入 deck，**永不**回写盘（Task 5 已保证）
-  - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{deviceId, name, uptimeMs, globalHourCount}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它）
+  - `snapshot()`：每个 bot 的 `{id, name, room, status, nick, hourCount, session, lifetime}` + `meta:{name, uptimeMs, globalHourCount, restartRequired, generatedAt}`（Task 10 的 `status` 与 P3 的 dev-state 帧都吃它；`deviceId` 属 P3，不在 P1 产出）
+    - **裁定 R28（复审校正 + 给 Task 8 的歧义警告）**：①上面这条摘要行原本还留着已作废的
+      `deviceId` 且漏了 `generatedAt`/`restartRequired`，按实现改齐；②**`restartRequired` 现在有两个
+      同名字但不同语义**——`report.restartRequired` 是**本次 converge** 的，`meta.restartRequired` 是
+      **粘滞**的（一旦置位只由进程重启清除）。Task 8 的 watcher 读的是 Report，Task 10 的 status 读的
+      是 snapshot；**别把粘滞位当成"当前仍待重启"的唯一真相源去反向推断**，也别在 watcher 里
+      用 `meta` 做收敛判断。
 
 - [ ] **Step 1: 写失败测试**（`tests/host.test.js`，注入假 runner/scheduler：`deps.createRunner` 走现成替身，真 WS 不连）
 
