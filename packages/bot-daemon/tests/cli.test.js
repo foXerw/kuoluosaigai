@@ -7,11 +7,13 @@
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { validateConfig, ConfigLoadError } from '../config.js'
+import { validateConfig, ConfigLoadError, loadConfig } from '../config.js'
+import { createConfigWatcher } from '../watch.js'
 import { main } from '../cli.js'
 
 const SECRET = 'sk-SUPERSECRET-do-not-leak-9f3a'
@@ -450,6 +452,156 @@ it('spawn 冒烟：bin validate 合法配置 → 子进程退 0 且 stdout 含 O
   expect(result.exitCode).toBe(0)
   expect(result.outStr).toContain('OK')
 }, 30000)
+
+// —— 审查轮 1 · Important 1 回归网：spawn 打 doctor 的 WS 超时路径，断言**子进程自己退出** ——
+
+it('spawn blackhole：黑洞 WS 端点下 doctor 超时判 FAIL 后必须自行退出（不关套接字=悬挂整个体检仪）', async () => {
+  // 黑洞服务器：收下 TCP，**永不**应答 upgrade——§5「VPS 出网被静默黑洞」的最小复现体。
+  const held = []
+  const blackhole = net.createServer((sock) => held.push(sock))
+  await new Promise((r) => blackhole.listen(0, '127.0.0.1', r))
+  const wsPort = blackhole.address().port
+  // provider 指向**立即拒绝**的端口：网络类失败秒判，把等待预算留给 WS 超时本体。
+  const dead = net.createServer()
+  await new Promise((r) => dead.listen(0, '127.0.0.1', r))
+  const httpPort = dead.address().port
+  await new Promise((r) => dead.close(r))
+  const dir = freshDir()
+  const cfgPath = path.join(dir, 'blackhole.config.js')
+  fs.writeFileSync(
+    cfgPath,
+    'export default ' +
+      JSON.stringify({
+        name: 'probe',
+        serverUrl: 'ws://127.0.0.1:' + wsPort,
+        provider: { baseUrl: 'http://127.0.0.1:' + httpPort, apiKey: 'sk-throwaway', model: 'm' },
+        bots: [{ id: 'b1', name: 'n', persona: 'p', room: 'nebula' }],
+      }) +
+      '\n',
+  )
+  const bin = fileURLToPath(new URL('../bin/saigai-bot.js', import.meta.url))
+  try {
+    const HARNESS_MS = 25000 // doctor 自己要等满 WS_TIMEOUT_MS=10s（外加 provider 一次重试 1s）；到点没自己退=悬挂实锤
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [bin, 'doctor', '--config', cfgPath, '--data-dir', dir], {
+        cwd: path.resolve(bin, '..', '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let outStr = ''
+      child.stdout.on('data', (d) => {
+        outStr += String(d)
+      })
+      child.stderr.on('data', () => {})
+      const killer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error('spawn blackhole：doctor 未自行退出（Important 1 悬挂复现）'))
+      }, HARNESS_MS)
+      child.on('exit', (exitCode) => {
+        clearTimeout(killer)
+        resolve({ exitCode, outStr })
+      })
+      child.on('error', (e) => {
+        clearTimeout(killer)
+        reject(e)
+      })
+    })
+    expect(result.outStr).toContain('serverUrl WS 可达性')
+    expect(result.outStr).toContain('超时')
+    expect(result.exitCode).toBe(1) // 体检结论照常是 1，但进程**自己**走人
+  } finally {
+    for (const s of held) s.destroy()
+    await new Promise((r) => blackhole.close(r))
+  }
+}, 40000)
+
+// —— 审查轮 1 · R33：ConfigLoadError.message 在构造点净化，假 key 三处打印面全不落 ——
+
+it('R33 求值期抛带 key：run stderr / doctor 输出 / watcher warn 三处都无 key，原文完整留在 cause', async () => {
+  const dir = freshDir()
+  const cfgPath = path.join(dir, 'leaky.config.js')
+  // 审查探针同款场景：求值期 JSON.parse 抛错，V8 把输入切片（含 key）嵌进 message。
+  // 实测钉形（Node 24）：输入以**非 JSON 开头**才走「Unexpected token + 输入切片」形态——
+  // 合法前缀（如 "1"+key）走 position 形态、本身不含切片；净化器两头都必须成立。
+  fs.writeFileSync(cfgPath, 'export default JSON.parse("' + SECRET + '")\n')
+
+  // ①validate 面（真 loadConfig，不注入）
+  const v = ctx({ load: (p) => loadConfig(p) })
+  expect(await main(['validate', cfgPath], v.deps)).toBe(1)
+  expect(joinedOf(v)).not.toContain(SECRET)
+  expect(joinedOf(v)).toContain('unparsable') // 净化不能吃掉定位信息的全部残值：kind 仍在场
+
+  // ②doctor 面（真 loadConfig）
+  const d = ctx({ load: (p) => loadConfig(p) })
+  expect(await main(['doctor', '--config', cfgPath, '--data-dir', dir], d.deps)).toBe(1)
+  expect(joinedOf(d)).not.toContain(SECRET)
+
+  // ③watcher 面（watch.js:175 打印点**不动**，由上游构造点净化——R33 裁定）
+  const warns = []
+  const watcher = createConfigWatcher({
+    load: () => loadConfig(cfgPath),
+    onSettle: () => {},
+    logger: { info: () => {}, warn: (m) => warns.push(String(m)), error: () => {} },
+    intervalMs: 25,
+    debounceMs: 10,
+  })
+  watcher.start()
+  try {
+    // 真 IO 轮询用真实时间等（until 的 setImmediate 自旋不消耗 25ms 墙钟）：最长 2s。
+    for (let i = 0; i < 80 && warns.length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  } finally {
+    watcher.stop()
+  }
+  expect(warns.join('\n')).toContain('unparsable')
+  expect(warns.join('\n')).not.toContain(SECRET)
+
+  // ④构造点直证：message 净化、cause 原文完整（诊断力不丢，R33 的「留 .cause」条款）
+  const err = await loadConfig(cfgPath).then(
+    () => null,
+    (e) => e,
+  )
+  expect(err).toBeInstanceOf(ConfigLoadError)
+  expect(err.kind).toBe('unparsable')
+  expect(err.message).not.toContain(SECRET)
+  expect(err.cause).toBeInstanceOf(Error)
+  // cause 保真=原文逐字（实测 V8 自己的切片窗口只带输入前 ~10 字符+省略号，故钉窗口内前缀
+  // 'sk-SUPERSE' 与被净化层剥掉的 'Unexpected token' 措辞——两头都证明「摘要归摘要、原文归 cause」）
+  const causeMsg = String(err.cause.message)
+  expect(causeMsg).toContain('sk-SUPERSE')
+  expect(causeMsg).toContain('Unexpected token')
+  expect(err.message).not.toContain('Unexpected token')
+})
+
+// —— 审查轮 1 · R34：关停步骤炸 ≠ 干净停止，常驻路径退 4（--once 同为 4，converge 炸的 1 优先）——
+
+it('R34 常驻：host.shutdown 抛错 → 退 4，FAIL 出声且后续步骤照跑', async () => {
+  const c = ctx({})
+  c.host.shutdown = () => {
+    c.order.push('host.shutdown')
+    throw new Error('dispose 炸——B12 冲刷可能没落盘')
+  }
+  const p = main(['run', '--data-dir', '/tmp/whatever'], c.deps)
+  await until(() => c.signals.SIGINT)
+  c.signals.SIGINT()
+  expect(await p).toBe(4)
+  expect(joinedOf(c)).toContain('关停步骤失败')
+  expect(c.order).toContain('lock.release') // 一步炸不连累后一步
+})
+
+it('R34 --once：converge 好而关停步骤炸 → 4；converge 已炸（1）时 1 优先不被覆盖', async () => {
+  const a = ctx({})
+  a.host.shutdown = () => {
+    throw new Error('dispose 炸')
+  }
+  expect(await main(['run', '--once', '--data-dir', '/tmp/whatever'], a.deps)).toBe(4)
+
+  const b = ctx({ convergeErr: new Error('deck 坏了') })
+  b.host.shutdown = () => {
+    throw new Error('dispose 也炸')
+  }
+  expect(await main(['run', '--once', '--data-dir', '/tmp/whatever'], b.deps)).toBe(1)
+})
 
 function joinedOf(c) {
   return c.out.concat(c.errs).join('\n')

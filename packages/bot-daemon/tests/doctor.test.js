@@ -282,7 +282,7 @@ it('原生 WebSocket 缺失 → FAIL（R5/D1 前提：没有全局 WS 就没有 
 it('WS 握手超时 → FAIL，且探测不留悬挂定时器（句柄纪律，Task 8 同款）', async () => {
   vi.useFakeTimers()
   try {
-    const { options, lines } = baseOver({ wsBehavior: 'silent' }) // 用导出的缺省 WS_TIMEOUT_MS 本体
+    const { options, lines, ws } = baseOver({ wsBehavior: 'silent' }) // 用导出的缺省 WS_TIMEOUT_MS 本体
     const p = runDoctor(options)
     await vi.advanceTimersByTimeAsync(WS_TIMEOUT_MS + 5)
     const code = await p
@@ -291,7 +291,29 @@ it('WS 握手超时 → FAIL，且探测不留悬挂定时器（句柄纪律，T
     expect(line.startsWith('FAIL')).toBe(true)
     expect(line).toContain('超时')
     expect(vi.getTimerCount()).toBe(0)
+    // Important 1：CONNECTING 状态的套接字本身是 ref 句柄（黑洞 TCP 在 Node 24 实测悬挂进程）——
+    // 超时/失败路径也必须 best-effort close。文件头「不留悬挂句柄」的声明由这条 +
+    // cli.test 的 spawn blackhole 用例联合兑现。
+    expect(ws.instances.length).toBe(1)
+    expect(ws.instances[0].closed).toBe(true)
   } finally {
     vi.useRealTimers()
   }
+})
+
+it('error 路径同样关套接字（Important 1：失败路径 close 是卫生，不是可选）', async () => {
+  const { options, ws } = baseOver({ wsBehavior: 'error' })
+  await runDoctor(options)
+  expect(ws.instances[0].closed).toBe(true)
+})
+
+it('check 自身逃逸异常 → FAIL 带原因而不是 undefined（Important 3；覆盖非 ConfigLoadError 重抛分支）', async () => {
+  const boom = new TypeError('boom-internal')
+  const { options, lines } = baseOver({ load: async () => { throw boom } })
+  const code = await runDoctor(options)
+  expect(code).toBe(1)
+  const line = lineFor(lines, '配置校验')
+  expect(line.startsWith('FAIL')).toBe(true)
+  expect(line).toContain('TypeError')
+  expect(joined(lines)).not.toContain('undefined')
 })

@@ -54,6 +54,11 @@ export const EXIT_OK = 0
 export const EXIT_FAIL = 1
 export const EXIT_USAGE = 2
 export const EXIT_LOCK_HELD = 3
+// R34（审查轮 1 裁定）：关停步骤炸 ≠ 干净停止——host.shutdown 炸可能意味着 B12 的
+// lifetime 冲刷没落盘（成本账目丢失）。systemd Restart=always 下退 0 会谎报「正常停止」，
+// 所以常驻与 --once 两路统一退 4；--once 里若 converge 已炸（1），1 优先不被 4 覆盖。
+// Task 12 的 README/unit 要写明这个码。
+export const EXIT_SHUTDOWN_FAILED = 4
 
 const DEFAULT_DATA_SUBDIR = path.join('.config', 'saigai-bot')
 const DEFAULT_CONFIG_FILE = 'saigai-bot.config.js'
@@ -71,7 +76,8 @@ const USAGE = [
   '      provider 出网实测（§5 前提）、serverUrl WS 可达、本地时钟、数据目录可写。',
   '',
   '默认数据目录 ~/.config/saigai-bot/（锁与 state.json 所在），默认配置 <数据目录>/saigai-bot.config.js。',
-  '退出码：0 正常；1 校验/体检/运行失败；2 用法错误；3 单实例锁被占用。',
+  '退出码：0 正常；1 校验/体检/运行失败；2 用法错误；3 单实例锁被占用；',
+  '        4 关停有步骤失败（state.json 冲刷可能未落盘）。',
 ].join('\n')
 
 // —— 不会抛的 console 包装（Task 11 造真身之前顶用；EPIPE/磁盘满不许带走进程）——
@@ -374,7 +380,7 @@ async function runCommand(rest, d) {
       d.printErr('FAIL: --once 收敛失败：' + (err && err.message ? err.message : String(err)))
       code = EXIT_FAIL
     }
-    if (!shutdownParts(null, host)) code = EXIT_FAIL
+    if (!shutdownParts(null, host) && code === EXIT_OK) code = EXIT_SHUTDOWN_FAILED // R34：1 优先于 4
     if (code === EXIT_OK) d.logger.info('daemon 已完成一轮（--once），干净退出')
     return code
   }
@@ -398,7 +404,7 @@ async function runCommand(rest, d) {
       if (done) return // 连击幂等：只关停一次，release 不双跑
       done = true
       const clean = shutdownParts(watcher, host)
-      d.logger.info(clean ? 'daemon 已优雅停止' : 'daemon 停止流程有步骤失败（详见上方 FAIL 行）')
+      d.logger.info(clean ? 'daemon 已优雅停止' : 'daemon 停止流程有步骤失败（详见上方 FAIL 行）——这不是干净停止（R34）')
       for (const off of offSignal) {
         try {
           off()
@@ -406,7 +412,7 @@ async function runCommand(rest, d) {
           /* 摘不掉也不改变退出码 */
         }
       }
-      resolve(EXIT_OK)
+      resolve(clean ? EXIT_OK : EXIT_SHUTDOWN_FAILED) // R34：关停步骤炸 → 4
     }
     offSignal = [d.onSignal('SIGTERM', stopAll), d.onSignal('SIGINT', stopAll)]
     watcher.start()

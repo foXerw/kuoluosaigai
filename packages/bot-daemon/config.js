@@ -337,6 +337,32 @@ export function validateConfig(raw) {
 // 模块出不来——半写坏语法，或求值期副作用抛（§8.1 本就禁止 import 副作用）。
 const IO_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ENOTDIR', 'ERR_MODULE_NOT_FOUND']
 
+// R33（审查轮 1 裁定）：异常文本在**构造点**净化，不在三个打印面（watch/cli/doctor）各配一份消毒剂。
+// 实测故障形态（Node 24）：V8 会把输入切片嵌进 message——`JSON.parse('<非 JSON 开头串>')` 抛
+// `Unexpected token 'x', "<输入窗口内切片>…" is not valid JSON`（切片窗口约 10 字符+省略号）；
+// 配置文件求值期抛错时这句**原样**流经下面两个 new ConfigLoadError，再被 watch.js:175 打进日志、
+// 被 run/doctor 打印——明文 key 落在求值路径上就会随消息外泄其头部。同仓先例姿态：
+// lock.js 拒 rethrow parse 文本、core runner 在发射点 redact。净化只留三样：内核/模块 code、
+// 错误 name、纯数字定位（position/line/column）——满足 Review Focus #1「指出行位」；
+// 完整原文一律在 err.cause。
+function summarizeThrown(err) {
+  const code = err && typeof err.code === 'string' ? err.code : null
+  const name = err && err.name ? String(err.name) : 'Error'
+  const raw = err && err.message ? String(err.message) : ''
+  const bits = []
+  const at = raw.match(/at position (\d+)/i)
+  if (at) bits.push('position ' + at[1])
+  const lc = raw.match(/line (\d+)[,:] column (\d+)/i)
+  if (lc) bits.push('line ' + lc[1] + ' column ' + lc[2])
+  if (bits.length === 0) {
+    // Node 编译错常见的尾部 `(file:///…:1:2)` 形态——只取两个数字，文件名本就等于 path 参数。
+    const paren = raw.match(/[^()/]*?:(\d+):(\d+)\)?\s*$/)
+    if (paren) bits.push('line ' + paren[1] + ' column ' + paren[2])
+  }
+  const label = code || name
+  return bits.length > 0 ? label + '（' + bits.join('，') + '）' : label
+}
+
 export async function loadConfig(filePath, { now = Date.now } = {}) {
   const resolved = path.resolve(filePath)
   try {
@@ -345,7 +371,8 @@ export async function loadConfig(filePath, { now = Date.now } = {}) {
     }
   } catch (err) {
     if (err instanceof ConfigLoadError) throw err
-    throw new ConfigLoadError('unreadable', filePath, err && err.message ? err.message : String(err), err)
+    // R33：detail 走净化摘要，原文（含内核消息里的任何内容）只进 cause。
+    throw new ConfigLoadError('unreadable', filePath, summarizeThrown(err), err)
   }
   const href = pathToFileURL(resolved).href + '?t=' + now()
   let mod
@@ -353,7 +380,8 @@ export async function loadConfig(filePath, { now = Date.now } = {}) {
     mod = await import(href)
   } catch (err) {
     const kind = err && IO_ERROR_CODES.includes(err.code) ? 'unreadable' : 'unparsable'
-    throw new ConfigLoadError(kind, filePath, err && err.message ? err.message : String(err), err)
+    // R33：求值期副作用抛的 message 是**原样透传**面（V8 可能内嵌输入切片，见 summarizeThrown 头注）。
+    throw new ConfigLoadError(kind, filePath, summarizeThrown(err), err)
   }
   return mod && 'default' in mod ? mod.default : undefined
 }

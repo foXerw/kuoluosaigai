@@ -28,7 +28,10 @@
 // —— 网络面全部可注入（测试零真网）——
 // fetchImpl / WebSocketImpl / load / now / sleep 与 Node 版本、全局 WS 在场性都是参数；
 // 缺省走真环境（globalThis.fetch / globalThis.WebSocket / loadConfig / Date.now）。
-// 探测句柄纪律与 Task 8 同款：超时定时器**必清**，open 成功**必 close**，不留悬挂句柄。
+// 探测句柄纪律与 Task 8 同款：超时定时器**必清**，**所有结算路径都 close**（含超时/失败——
+// CONNECTING 套接字是 ref 句柄，审查轮 1 Important 1 实测黑洞下不关则 doctor 永挂），
+// 不留悬挂句柄。此声明由 tests/doctor.test.js（closed 断言）与 tests/cli.test.js
+// （spawn blackhole「子进程必须自己退出」）两条联合钉死，不是注释愿景。
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -79,12 +82,8 @@ function probeWebSocket(url, WebSocketImpl, timeoutMs) {
     let settled = false
     let timer = null
     function onOpen() {
+      // 可达性已证：finish 里的 close 一帧业务都不发、一秒都不多留（R5）。
       finish({ ok: true })
-      try {
-        ws.close() // 可达性已证，一帧业务都不发、一秒都不多留（R5）
-      } catch (e) {
-        /* 关不掉也不改变判据 */
-      }
     }
     function onError() {
       finish({ ok: false, why: '握手失败（TCP/TLS/HTTP upgrade 任一环节被拒或断裂）' })
@@ -102,6 +101,15 @@ function probeWebSocket(url, WebSocketImpl, timeoutMs) {
         ws.removeEventListener('close', onClose)
       } catch (e) {
         /* 摘不掉也不改变判据 */
+      }
+      try {
+        // Important 1（审查轮 1 实测）：CONNECTING 套接字是 **ref 句柄**——黑洞 TCP（收连接
+        // 永不应答 upgrade）下超时判 FAIL 后不关它，process 带着 ref'd TCPSocketWrap 永不退出。
+        // doctor 恰是为诊断这种黑洞而生的，绝不能死在它手里。close 在所有结算路径都做
+        // （成功=一秒不多留；失败=释放句柄；已关闭则 no-op），best-effort。
+        ws.close()
+      } catch (e) {
+        /* 关不掉也不改变判据 */
       }
       resolve(result)
     }
@@ -152,7 +160,9 @@ export async function runDoctor(options) {
       result = await fn()
     } catch (e) {
       // 体检仪自身被单项炸出不行：任何逃逸异常都归该 FAIL，逐行照印有声音。
-      result = { ok: false, why: '检查自身抛出未预期异常（' + (e && e.name ? e.name : String(e)) + '）' }
+      // Important 3（审查轮 1）：字段名必须是 detail——上一版误写 why，打印面读 detail，
+      // 于是「唯一没有其它线索的路径」反而输出 `：undefined` 把诊断吞了。测试钉死非 undefined。
+      result = { ok: false, detail: '检查自身抛出未预期异常（' + (e && e.name ? e.name : String(e)) + '）' }
     }
     const tag = result.ok ? 'OK  ' : 'FAIL'
     if (!result.ok) failed += 1
