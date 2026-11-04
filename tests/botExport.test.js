@@ -6,10 +6,14 @@
 // packages/bot-daemon/tests/config.test.js 的 R6 用例，两边从计划逐字抄同一段文本，
 // 谁也不得单方面改写。
 //
-// 覆盖：A1（key 不进导出物）、R6（同形）、R18(1)（从 raw 生成——缺省字段断「无」不断「值」）、
+// 覆盖：A1（key 不进导出物）、R6（同形）、R18(1)+R41（与 core 缺省同值不出行、异值出行——
+// 修正轮 1 裁定 R41：活体 bot 全部过 core normalizeCfg，「键不存在」是按钮永远造不出的形状，
+// 缺席断言必须由真 deck 对象驱动，否则钉的是小说——Task 3 的 {12,6} 同类缺陷）、
 // 转义策略（persona 自由文本含反引号/${}/引号/换行/反斜杠）、bot 自造 id 的稳定 slug 补齐。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { buildConfigFile } from '../src/bots/export'
+import { createBotStore } from '../src/bots/store'
+import { DEFAULT_CHATTINESS, DEFAULT_TEMPERATURE } from 'kuoluosaigai-bot-core'
 
 // —— 计划「共享 fixture」权威文本，逐字抄（不得单方面改写；对面 Task 4 的 R6 用例同源）——
 const FIXTURE_TEXT = [
@@ -131,19 +135,59 @@ describe('id 补齐（daemon 红线 [a-z0-9-]{1,32}）', () => {
   })
 })
 
-describe('R18(1)：从 raw 生成——缺省字段绝不回填（断"无"不断"值"）', () => {
-  it('bot 从未设过 chattiness/temperature/hourlyBudget → 导出文本里连键名都不出现', () => {
-    const text = buildConfigFile({
-      providers: [],
-      bots: [{ id: 'k', name: 'K', persona: 'p', roomId: 'nebula', chattiness: null, temperature: undefined, rawPrompt: '' }],
-    })
-    expect(text).not.toMatch(/chattiness/)
-    expect(text).not.toMatch(/temperature/)
-    expect(text).not.toMatch(/hourlyBudget/)
-    expect(text).not.toMatch(/rawPrompt/) // 空 rawPrompt = 未设（null/undefined/'' 一律按缺席，绝不落成显式噪音行）
+describe('R18(1)+R41：真形状驱动——同 core 缺省值不出行，异值出行', () => {
+  // 修正轮 1 裁定 R41：按钮的唯一数据源是 reactive deck，deck 里每个 bot 都过了 core
+  // normalizeCfg（deck.js:496/499），chattiness/temperature **永远带值在场**——旧版用
+  // 「键不存在」的手造输入做缺席断言，钉的是活体造不出的形状（Task 3 {12,6} 同类缺陷）。
+  // 本组改为 createBotStore+addBot 造**按钮同款对象**驱动：同缺省 ⇒ 整行省略（让 daemon
+  // 继承 core 缺省，日后改默认继续生效）；异缺省 ⇒ 出行。
+  const disposables = []
+  afterEach(() => {
+    while (disposables.length) disposables.pop().dispose()
+  })
+  function makeStore() {
+    const m = new Map()
+    const storage = {
+      getItem: (k) => (m.has(k) ? m.get(k) : null),
+      setItem: (k, v) => m.set(k, String(v)),
+      removeItem: (k) => m.delete(k),
+    }
+    const store = createBotStore({ storage, now: () => 1730000000000, deps: { tabId: 'tab-export-test' } })
+    disposables.push(store)
+    return store
+  }
+
+  it('deck 默认新建 bot（chattiness/temperature 在场且等于 core 缺省）→ 导出文本无 chattiness:/temperature:/hourlyBudget: 行', () => {
+    const store = makeStore()
+    store.addBot({ name: '小李', persona: 'p', roomId: 'nebula' })
+    const bot = store.bots[0]
+    // 钉住输入形状：值在场且恰是 core 缺省——本用例绝不允许靠「字段本来就缺」偷绿
+    expect(bot.chattiness).toBe(DEFAULT_CHATTINESS)
+    expect(bot.temperature).toBe(DEFAULT_TEMPERATURE)
+    const text = buildConfigFile({ providers: store.providers, bots: store.bots })
+    expect(text).not.toMatch(/chattiness:/)
+    expect(text).not.toMatch(/temperature:/)
+    expect(text).not.toMatch(/hourlyBudget:/)
+    const got = evalConfigText(text)
+    expect(got.bots[0]).not.toHaveProperty('chattiness')
+    expect(got.bots[0]).not.toHaveProperty('temperature')
+    expect(got.bots[0]).not.toHaveProperty('hourlyBudget')
   })
 
-  it('显式 0 是「用户设过」→ 必须出现在导出物里（0≠缺省）', () => {
+  it('deck bot 与缺省不同（chattiness 70 / temperature 1.1 / hourlyBudget 20）→ 行在场且值正确', () => {
+    const store = makeStore()
+    store.addBot({ name: '小李', persona: 'p', roomId: 'nebula', chattiness: 70, temperature: 1.1, hourlyBudget: 20 })
+    const bot = store.bots[0]
+    expect(bot.chattiness).toBe(70) // 输入形状证：真 deck 存了非缺省值
+    expect(bot.hourlyBudget).toBe(20)
+    const got = evalConfigText(buildConfigFile({ providers: store.providers, bots: store.bots }))
+    expect(got.bots[0].chattiness).toBe(70)
+    expect(got.bots[0].temperature).toBe(1.1)
+    expect(got.bots[0].hourlyBudget).toBe(20)
+    expect(typeof DEFAULT_CHATTINESS).toBe('number') // 镜像护栏：若实现「全省略」矫枉过正，本用例先红
+  })
+
+  it('显式 0 与 core 缺省不同 → 必须出行（0 是语义值，既不是缺省也不是未设）', () => {
     const text = buildConfigFile({
       providers: [],
       bots: [{ id: 'k', name: 'K', persona: 'p', roomId: 'nebula', chattiness: 0, temperature: 0, hourlyBudget: 0 }],
@@ -151,5 +195,15 @@ describe('R18(1)：从 raw 生成——缺省字段绝不回填（断"无"不断
     expect(text).toContain('chattiness: 0')
     expect(text).toContain('temperature: 0')
     expect(text).toContain('hourlyBudget: 0')
+  })
+
+  it('防御面：null/undefined 可选字段与空 rawPrompt 一律不出行', () => {
+    const text = buildConfigFile({
+      providers: [],
+      bots: [{ id: 'k', name: 'K', persona: 'p', roomId: 'nebula', chattiness: null, temperature: undefined, rawPrompt: '' }],
+    })
+    expect(text).not.toMatch(/chattiness:/)
+    expect(text).not.toMatch(/temperature:/)
+    expect(text).not.toMatch(/rawPrompt/)
   })
 })
