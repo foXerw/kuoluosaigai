@@ -113,6 +113,8 @@ function makeRunner(opts = {}) {
     onState: (p) => patches.push(p),
     onEvent: (t, payload) => events.push({ t, payload }),
     ...(opts.gate ? { gate: opts.gate } : {}), // P1 Task 2：gate 端口透传位（缺省不加键）
+    ...(opts.humanize !== undefined ? { humanize: opts.humanize } : {}), // P4：缺省不加键 → 旧行为
+    ...(opts.humanizeRng ? { humanizeRng: opts.humanizeRng } : {}),
   })
   const resolveSleep = () => {
     const s = sleepQ.shift()
@@ -935,6 +937,88 @@ describe('R24 hourlyBudget → rhythm hourlyCap 透传（Task 3b）', () => {
     await humanCycle(ctx, s, tRef) // per-bot 才用了 1/5，全局已满 → 不发、不调 LLM
     expect(sentMessages(s)).toBe(1)
     expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('P4 humanize 管道（单条）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    StubSocket.instances = []
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const sentMessages = (s) => framesOf(s).filter((f) => f.type === 'message')
+
+  it('沉默标记：不发送、不记账、不掷 typing/afk', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5]), // streak; prob命中; think=5000
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5]), // 目标长度抽样
+      fetchImpl: vi.fn(async () => llmOk('[沉默]')),
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+    s.emit(msgFrame({ id: 'sil', ts: 60 }))
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([5000])
+    ctx.resolveSleep()
+    await flush()
+    expect(ctx.fetchImpl).toHaveBeenCalledTimes(1)
+    expect(sentMessages(s)).toEqual([])
+    expect(ctx.sleepQ).toHaveLength(0) // 沉默不掷 typing/afk
+    expect(ctx.events.filter((e) => e.t === 'activity' && e.payload.sent)).toHaveLength(0)
+    expect(ctx.runner.getState().hourCount).toBe(0)
+    expect(ctx.runner.getState().started).toBe(true)
+  })
+
+  it('transcript 单条 + 目标长度 + 句号语气处理 + 正常记账', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5]),
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5, 0.5, 0.5]),
+      fetchImpl: vi.fn(async () => llmOk('好的。')),
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+    s.emit(msgFrame({ id: 'h1', ts: 70 }))
+    ctx.resolveSleep()
+    await flush()
+
+    const body = JSON.parse(ctx.fetchImpl.mock.calls[0][1].body)
+    expect(body.messages[0].role).toBe('system')
+    expect(body.messages[0].content).toContain('只学语气')
+    expect(body.messages[1].role).toBe('user')
+    expect(body.messages[1].content).toContain('[群聊记录')
+    expect(body.messages[1].content).toContain('目标长度约 8 字')
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([1500])
+
+    ctx.resolveSleep()
+    await flush()
+    expect(sentMessages(s)).toHaveLength(1)
+    expect(sentMessages(s)[0].text).toBe('好的')
+    expect(ctx.runner.getState().hourCount).toBe(1)
+  })
+
+  it('drowsy：quietNow 时 think×2、目标压到 8 字、指令含迷糊', async () => {
+    const gate = { allowSpeak: () => true, quietNow: () => true }
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5]),
+      humanize: true,
+      humanizeRng: mkRng([0.9, 0.9, 0.5, 0.5]),
+      gate,
+      fetchImpl: vi.fn(async () => llmOk('好。')),
+    })
+    const s = land(ctx)
+    s.emit(msgFrame({ text: 'Nova 在吗', id: 'd1', ts: 80 }))
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([10000]) // think 5000 ×2
+    ctx.resolveSleep()
+    await flush()
+
+    const body = JSON.parse(ctx.fetchImpl.mock.calls[0][1].body)
+    const last = body.messages[body.messages.length - 1]
+    expect(last.role).toBe('user')
+    expect(last.content).toContain('迷糊')
+    expect(last.content).toContain('目标长度约 8 字')
   })
 })
 

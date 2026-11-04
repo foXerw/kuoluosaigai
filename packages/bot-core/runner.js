@@ -36,7 +36,8 @@
 
 import { createContextBuffer } from './buffer.js'
 import { createRhythm, trailingFamilyStreak, RHYTHM_DEFAULTS } from './rhythm.js'
-import { buildSystemPrompt, buildMessages, clampText } from './prompt.js'
+import { buildSystemPrompt, buildMessages, buildTranscriptMessages, clampText } from './prompt.js'
+import { planReply, sampleTargetLength, HUMANIZE_DEFAULTS } from './humanize.js'
 import { chatCompletion, LlmError } from './llm.js'
 import { createBotConnection } from './connection.js'
 import { mergeHistory } from './historyMerge.js'
@@ -72,9 +73,11 @@ function between(rng, [lo, hi]) {
  *   onState?: (patch: object) => void,
  *   onEvent?: (type: 'activity'|'nick'|'stopped'|'error'|'warn', payload?: any) => void,
  *     // Q7 观测事件：'error' → {kind, message, fatal}；'warn' → {reason}（降级停用报因）
- *   gate?: { allowSpeak: (mentions?: boolean) => boolean },
+ *   gate?: { allowSpeak: (mentions?: boolean) => boolean, quietNow?: () => boolean },
  *     // Q9/§12 schedule 刹车（P1 Task 2）：deck 由 opts.schedule 建 createGate 透传；
- *     // 缺省（浏览器/未配置）→ 现状行为逐字节不变
+ *     // 缺省（浏览器/未配置）→ 现状行为逐字节不变。quietNow 供 P4 迷糊层判定。
+ *   humanize?: boolean, // P4：缺省 false（runner 直连用户保持旧行为；deck 真实宿主默认 true）
+ *   humanizeRng?: () => number, // P4：独立随机流，绝不复用 rhythm 的 rng（旧逐值断言依赖它）
  * }} options
  * @returns {{ start: () => void, stop: (reason?: string) => void,
  *   switchRoom: (roomId: string) => void, clearBuffer: () => void,
@@ -95,6 +98,8 @@ export function createBotRunner({
   onState,
   onEvent,
   gate, // Q9/§12 schedule 刹车端口（deck 注入；缺省 → 现状行为）
+  humanize = false, // P4：拟人管道（transcript/目标长度/沉默/分段/语气/迷糊）
+  humanizeRng = Math.random, // P4：独立随机流，避免扰动 rhythm 的注入 rng 序列
 }) {
   const buffer = createContextBuffer()
   const badge = `BOT·${String(bot.name ?? '').slice(0, 12)}` // 全局约束：人格名 ≤12 截断
@@ -260,21 +265,42 @@ export function createBotRunner({
     speaking = true
     const epoch = roomEpoch
     try {
-      await sleep(job.thinkMs) // 思考延迟（注入 sleep：假时钟可停可推）
+      // P4 迷糊层：静默窗（quietHours / 刚上线窗）里被点名仍可回，但像没睡醒——
+      // 思考更久、回复更短、不拆段。gate 缺省/无 quietNow（浏览器）→ 不启用。
+      const drowsy = humanize && !!(gate && typeof gate.quietNow === 'function' && gate.quietNow())
+      const thinkMs = drowsy
+        ? Math.min(job.thinkMs * HUMANIZE_DEFAULTS.drowsyThinkFactor, RHYTHM_DEFAULTS.totalDelayCapMs)
+        : job.thinkMs
+      await sleep(thinkMs) // 思考延迟（注入 sleep：假时钟可停可推）
       if (!started || epoch !== roomEpoch) return // 等待期间停/切房 → LLM 都不必发
+
+      // P4：每轮抽一个目标字数（拟人分布），随 transcript 尾注注入；drowsy 压到 ≤8。
+      const targetLen = humanize
+        ? Math.min(sampleTargetLength(humanizeRng), drowsy ? HUMANIZE_DEFAULTS.drowsyMaxTarget : 30)
+        : null
       let res
       try {
         res = await chatCompletion({
           provider,
           model: bot.model,
           temperature: bot.temperature,
-          messages: buildMessages({
-            system: systemPrompt,
-            frames: buffer.all(),
-            selfNick: nick,
-            idle: job.idle,
-            window: PROMPT_WINDOW,
-          }),
+          messages: humanize
+            ? buildTranscriptMessages({
+              system: systemPrompt,
+              frames: buffer.all(),
+              selfNick: nick,
+              idle: job.idle,
+              window: PROMPT_WINDOW,
+              targetLen,
+              drowsy,
+            })
+            : buildMessages({
+              system: systemPrompt,
+              frames: buffer.all(),
+              selfNick: nick,
+              idle: job.idle,
+              window: PROMPT_WINDOW,
+            }),
           fetchImpl,
           sleep, // 429/5xx 重试延迟同样走注入 sleep
         })
@@ -292,11 +318,19 @@ export function createBotRunner({
       }
       // B7 双保险其一：在途期间切房/停机 → 响应作废（连打字延迟都不掷）
       if (!started || epoch !== roomEpoch) return
-      const text = clampText(res.text) // B6：发送前必截（llm 只 trim 不截断）
+      let text
+      if (humanize) {
+        // T4 先不拆段（allowSegments:false）——分段由 Task 5 打开并补逐段发送。
+        const plan = planReply(res.text, { rng: humanizeRng, targetLen, allowSegments: false })
+        if (plan.silent) return // 模型选择沉默：不发送、不记账、不掷 typing/afk
+        text = plan.segments[0] ?? ''
+      } else {
+        text = clampText(res.text) // B6：发送前必截（llm 只 trim 不截断）
+      }
       if (!text) return // B6：空回复不发
       const typing = rhythm.typingDelay(text.length)
-      // 合计封顶 Math.min(think+typing, 15000)：第二段只补差值
-      await sleep(Math.max(0, Math.min(typing, RHYTHM_DEFAULTS.totalDelayCapMs - job.thinkMs)))
+      // 合计封顶 Math.min(think+typing, 15000)：第二段只补差值（drowsy 用加长后的 thinkMs）
+      await sleep(Math.max(0, Math.min(typing, RHYTHM_DEFAULTS.totalDelayCapMs - thinkMs)))
       if (!started || epoch !== roomEpoch) return
       // B7 双保险其二：触发帧所在房必须仍是当前房
       if (job.frame && job.frame.roomId !== connection.currentRoomId) return
