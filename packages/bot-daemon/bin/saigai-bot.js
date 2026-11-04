@@ -1,17 +1,21 @@
 #!/usr/bin/env node
-// saigai-bot CLI 占位入口（Task 4 只建骨架；run/validate/doctor 子命令在 Task 9 落地）。
-// lint 约束（packages/ 在 eslint 覆盖内）：不用顶层 await，入口一律 async main + then/catch。
-async function main() {
-  console.log('saigai-bot：CLI 子命令（run/validate/doctor）将于 Task 9 实现；当前仅有包骨架与配置层。')
-  return 0
-}
+// saigai-bot CLI 入口（Task 9 填实 Task 4 的骨架）。
+// lint/工程约束：packages/ 归 eslint 7 + babel——**不用顶层 await**；一律 async main().then，
+// 退出码经 process.exitCode 传递（不用 process.exit，给 stdout/stderr 冲刷留出回合）。
+// main() 永不该 reject（cli.js 各分支自带兜底），这里的 rejection 分支是最后防线：
+// 出声 + 退 1，绝不静默（A5）。
+import { main } from '../cli.js'
 
-main().then(
+main(process.argv.slice(2)).then(
   (code) => {
     process.exitCode = code
   },
   (err) => {
-    console.error('saigai-bot 启动失败：', err && err.message ? err.message : err)
+    try {
+      console.error('saigai-bot 未预期异常：' + (err && err.name ? err.name + '：' : '') + (err && err.message ? err.message : String(err)))
+    } catch (e) {
+      /* 连 stderr 都炸时只剩退出码 */
+    }
     process.exitCode = 1
   },
 )

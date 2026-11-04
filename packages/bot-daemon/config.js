@@ -52,8 +52,10 @@ const BOT_KEYS = ['id', 'name', 'persona', 'room', 'chattiness', 'temperature', 
 
 /**
  * loadConfig 的类型化失败。kind 二选一：
- * - 'unreadable'：ENOENT/EACCES/模块图缺失等——文件读不到（或求值期副作用抛，拿不到配置）。
- * - 'unparsable'：语法坏（编辑器半写状态最常见落点）。
+ * - 'unreadable'：ENOENT/EACCES/模块图缺失等——内核 IO/模块图级的读不到（判定面见下方 IO_ERROR_CODES）。
+ * - 'unparsable'：语法坏（编辑器半写状态最常见落点），**求值期副作用抛也归这里**
+ *   （文件在、模块出不来——loadConfig 实现如此分类，本注释旧版曾误称其归 'unreadable'，
+ *   Task 4 审查 parked 的文档缺陷，由 Task 9 更正；行为未变，判读以实现为准）。
  * 调用方用 `instanceof ConfigLoadError` + `.kind` 分流，不要靠 message 猜。
  */
 export class ConfigLoadError extends Error {
