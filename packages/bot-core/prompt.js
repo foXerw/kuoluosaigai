@@ -1,5 +1,8 @@
 // Prompt 组装 —— 把 bot 人格 + 房间上下文映射为 OpenAI chat/completions messages。
-// 纯字符串/数组操作，无 IO，不依赖 Vue，不 import 其他 bot-core 模块。
+// 纯字符串/数组操作，无 IO，不依赖 Vue。只 import 同包纯数据（语料）与纯工具（沉默标记）。
+
+import { FEW_SHOT_EXAMPLES, FEW_SHOT_HEADER } from './humanize-corpus.js'
+import { SILENCE_TOKEN } from './humanize.js'
 
 /**
  * 消息最大字符数。clampText 截断上限。
@@ -41,12 +44,92 @@ export function clampText(s) {
 
 /**
  * 构建 system prompt 字符串。
- * @param {{ name: string, persona: string, override?: string }} opts
+ * override 非空 → 原样返回（用户完全接管，few-shot 也不注入）。
+ * 否则模板 + Tieba few-shot 例句块（fewShot=false 可关，测试/对比用）。
+ * @param {{ name: string, persona: string, override?: string, fewShot?: boolean }} opts
  * @returns {string}
  */
-export function buildSystemPrompt({ name, persona, override }) {
+export function buildSystemPrompt({ name, persona, override, fewShot = true }) {
   if (typeof override === 'string' && override.length > 0) return override
-  return SYSTEM_TEMPLATE.replace('{name}', name).replace('{persona}', persona)
+  const base = SYSTEM_TEMPLATE.replace('{name}', name).replace('{persona}', persona)
+  if (!fewShot) return base
+  const examples = FEW_SHOT_EXAMPLES.map((s) => `- ${s}`).join('\n')
+  return `${base}\n\n${FEW_SHOT_HEADER}\n${examples}`
+}
+
+function transcriptFooter({ targetLen, idle, drowsy }) {
+  const n = Number.isFinite(targetLen) ? Math.max(2, Math.floor(targetLen)) : 12
+  const target = drowsy ? Math.min(n, 8) : n
+  if (idle) {
+    return `（群里冷场了。主动抛一句轻松的话，别像采访或客服。这轮目标长度约 ${target} 字。不想说就只输出 ${SILENCE_TOKEN}。）`
+  }
+  const common = `（你是群里的普通成员，不是客服。可以接住任意一句，可以串几个人的话，也可以不接；不要逐条回答，不要解释。这轮目标长度约 ${target} 字。实在不想接就只输出 ${SILENCE_TOKEN}。）`
+  if (drowsy) return `（你现在有点迷糊，回复要更短更随意，可以只回两三个字。）\n${common}`
+  return common
+}
+
+/**
+ * P4 transcript 组装：他人连续消息压成一条 user 消息，self 连续消息保留为
+ * assistant 轮次（既让模型读整段记录，也让它看见自己的文风）。
+ * 记录头只加在第一个 user 段；末尾 user 段追加本轮指令（目标字数 / 沉默选项）。
+ *
+ * @param {{ system: string, frames: Array<object>, selfNick: string|null,
+ *   window?: number, targetLen?: number, idle?: boolean, drowsy?: boolean }} opts
+ * @returns {Array<{role: string, content: string}>}
+ */
+export function buildTranscriptMessages({
+  system,
+  frames,
+  selfNick,
+  window = 40,
+  targetLen = 12,
+  idle = false,
+  drowsy = false,
+}) {
+  const msgs = [{ role: 'system', content: system }]
+  const take = window <= 0 ? [] : (frames || []).slice(-window)
+
+  const isSelfFrame = (f) => !!(selfNick && f.nick === selfNick)
+  const usable = take.filter((f) => clampText(f.text))
+  const totalOther = usable.filter((f) => !isSelfFrame(f)).length
+
+  let runRole = null
+  let runLines = []
+  let firstUserRun = true
+
+  function flush() {
+    if (!runLines.length) return
+    if (runRole === 'assistant') {
+      msgs.push({ role: 'assistant', content: runLines.join('\n') })
+    } else {
+      const head = firstUserRun ? `[群聊记录 · 最近 ${totalOther} 条]\n` : ''
+      msgs.push({ role: 'user', content: head + runLines.join('\n') })
+      firstUserRun = false
+    }
+    runLines = []
+  }
+
+  for (const f of usable) {
+    const self = isSelfFrame(f)
+    const role = self ? 'assistant' : 'user'
+    if (runRole !== null && role !== runRole) flush()
+    runRole = role
+    if (self) {
+      // assistant 轮次只放自家原话（不带昵称），与旧 buildMessages 的 assistant 形状一致
+      runLines.push(clampText(f.text))
+    } else {
+      const badge = typeof f.badge === 'string' && f.badge.length > 0 ? `[${f.badge}]` : ''
+      runLines.push(`${f.nick}${badge}: ${clampText(f.text)}`)
+    }
+  }
+  flush()
+
+  const footer = transcriptFooter({ targetLen, idle, drowsy })
+  const last = msgs[msgs.length - 1]
+  if (last && last.role === 'user') last.content += `\n${footer}`
+  else msgs.push({ role: 'user', content: footer })
+
+  return msgs
 }
 
 /**

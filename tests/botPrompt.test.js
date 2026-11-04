@@ -4,6 +4,7 @@ import {
   clampText,
   buildSystemPrompt,
   buildMessages,
+  buildTranscriptMessages,
   SYSTEM_TEMPLATE,
   IDLE_KICK,
 } from 'kuoluosaigai-bot-core'
@@ -214,5 +215,113 @@ describe('exported constants', () => {
     expect(SYSTEM_TEMPLATE).toBeDefined()
     expect(typeof SYSTEM_TEMPLATE).toBe('string')
     expect(SYSTEM_TEMPLATE.length).toBeGreaterThan(0)
+  })
+})
+
+describe('buildSystemPrompt few-shot（P4）', () => {
+  it('默认注入 Tieba few-shot 头与不少于 30 条例句，原规则仍在', () => {
+    const s = buildSystemPrompt({ name: 'X', persona: 'Y' })
+    expect(s).toContain('只学语气')
+    expect(s).toContain('不要照抄')
+    const lines = s.split('\n').filter((l) => l.startsWith('- '))
+    expect(lines.length).toBeGreaterThanOrEqual(30)
+    expect(s).toContain('280')
+  })
+
+  it('fewShot:false 不注入样例', () => {
+    const s = buildSystemPrompt({ name: 'X', persona: 'Y', fewShot: false })
+    expect(s).not.toContain('只学语气')
+    expect(s).not.toContain('不要照抄')
+  })
+
+  it('override 逐字节返回，few-shot 也不注入', () => {
+    const custom = '完全自定义'
+    expect(buildSystemPrompt({ name: 'X', persona: 'Y', override: custom })).toBe(custom)
+  })
+})
+
+describe('buildTranscriptMessages（P4 transcript 单条）', () => {
+  const sys = 'SYS'
+  const A = msg(1, 1, 'ANON-A', '', '第一句')
+  const B = msg(2, 2, 'ANON-B', 'BOT·小白', '第二句')
+  const S = msg(3, 3, 'ANON-SELF', '', '我自己说的')
+  const C = msg(4, 4, 'ANON-C', '', '第三句')
+
+  it('他人连续消息压成一条 user（带记录头/昵称/徽章），self 连续段为 assistant', () => {
+    const out = buildTranscriptMessages({
+      system: sys,
+      frames: [A, B, S, C],
+      selfNick: 'ANON-SELF',
+      targetLen: 7,
+    })
+    expect(out.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(out[1].content).toContain('[群聊记录 · 最近 3 条]')
+    expect(out[1].content).toContain('ANON-A: 第一句')
+    expect(out[1].content).toContain('ANON-B[BOT·小白]: 第二句')
+    expect(out[2].content).toBe('我自己说的')
+    expect(out[3].content).toContain('ANON-C: 第三句')
+    expect(out[3].content).toContain('目标长度约 7 字')
+    expect(out[3].content).toContain('[沉默]')
+  })
+
+  it('selfNick 为 null 时全部按他人处理，连续消息仍压成一条 user', () => {
+    const out = buildTranscriptMessages({ system: sys, frames: [A, S], selfNick: null, targetLen: 9 })
+    expect(out.map((m) => m.role)).toEqual(['system', 'user'])
+    expect(out[1].content).toContain('ANON-SELF: 我自己说的')
+  })
+
+  it('window 生效（窗口外不出现）', () => {
+    const frames = Array.from({ length: 60 }, (_, i) => msg(i, i, `ANON-${i}`, '', `m${i}`))
+    const out = buildTranscriptMessages({ system: sys, frames, window: 10, targetLen: 9 })
+    expect(out[1].content).not.toContain('m9\n')
+    expect(out[1].content).toContain('m59')
+    expect((out[1].content.match(/^ANON-/gm) || []).length).toBe(10)
+  })
+
+  it('idle：冷场主动发起指令', () => {
+    const out = buildTranscriptMessages({
+      system: sys,
+      frames: [A],
+      selfNick: 'ANON-SELF',
+      targetLen: 6,
+      idle: true,
+    })
+    const last = out[out.length - 1]
+    expect(last.content).toContain('冷场')
+    expect(last.content).toContain('主动')
+  })
+
+  it('drowsy：迷糊/更短指令，且目标字数被压到 ≤8', () => {
+    const out = buildTranscriptMessages({
+      system: sys,
+      frames: [A],
+      selfNick: 'ANON-SELF',
+      targetLen: 29,
+      drowsy: true,
+    })
+    const last = out[out.length - 1]
+    expect(last.content).toContain('迷糊')
+    expect(last.content).toContain('更短')
+    expect(last.content).toContain('目标长度约 8 字')
+  })
+
+  it('空 frames 也给出 user 指令（idle 可用）；window=0 同理', () => {
+    const empty = buildTranscriptMessages({ system: sys, frames: [], selfNick: 'X', targetLen: 5 })
+    expect(empty.map((m) => m.role)).toEqual(['system', 'user'])
+    const zero = buildTranscriptMessages({ system: sys, frames: [A], selfNick: 'X', window: 0, targetLen: 5 })
+    expect(zero.map((m) => m.role)).toEqual(['system', 'user'])
+  })
+
+  it('单条消息同样截断到 280', () => {
+    const long = msg(9, 9, 'ANON-L', '', 'x'.repeat(400))
+    const out = buildTranscriptMessages({ system: sys, frames: [long], selfNick: 'X', targetLen: 5 })
+    expect(out[1].content).toContain('x'.repeat(280))
+    expect(out[1].content).not.toContain('x'.repeat(281))
+  })
+
+  it('最后一条是 self 时，footer 作为新的 user 轮追加', () => {
+    const out = buildTranscriptMessages({ system: sys, frames: [A, S], selfNick: 'ANON-SELF', targetLen: 5 })
+    expect(out.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(out[out.length - 1].content).toContain('目标长度约 5 字')
   })
 })
