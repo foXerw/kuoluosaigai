@@ -1022,3 +1022,117 @@ describe('P4 humanize 管道（单条）', () => {
   })
 })
 
+describe('P4 分段连发', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    StubSocket.instances = []
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const sentTexts = (s) => framesOf(s).filter((f) => f.type === 'message').map((f) => f.text)
+
+  // 3 段：目标 8 字（0.4/0.5）→ 强制拆段（0.1）→ 每段语气 2 骰 → 每段间隔 1 骰。
+  const HRNG = () => mkRng([0.4, 0.5, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+
+  async function landAndFetch(ctx, s) {
+    s.emit(msgFrame({ id: 'seg', ts: 90 }))
+    ctx.resolveSleep() // think
+    await flush()
+    ctx.resolveSleep() // typing（整段合并长度算一次）
+    await flush()
+  }
+
+  it('3 段逐条发送、段间 775ms、每段各自记账', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5, 0.5, 0.5]), // 构造/prob/think/typing/AFK×3
+      humanize: true,
+      humanizeRng: HRNG(),
+      fetchImpl: vi.fn(async () => llmOk('好。行！那就这样？')),
+    })
+    const s = land(ctx)
+    ctx.events.length = 0
+    await landAndFetch(ctx, s)
+    expect(sentTexts(s)).toEqual(['好'])
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([775])
+
+    ctx.resolveSleep()
+    await flush()
+    expect(sentTexts(s)).toEqual(['好', '行！'])
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([775])
+
+    ctx.resolveSleep()
+    await flush()
+    expect(sentTexts(s)).toEqual(['好', '行！', '那就这样？'])
+    expect(ctx.sleepQ).toHaveLength(0)
+
+    expect(ctx.runner.getState().hourCount).toBe(3)
+    expect(ctx.events.filter((e) => e.t === 'activity' && e.payload.sent)).toHaveLength(3)
+    const locals = ctx.runner.getBuffer().filter((f) => String(f.id).startsWith('local-'))
+    expect(locals).toHaveLength(3)
+    expect(new Set(locals.map((f) => f.id)).size).toBe(3)
+  })
+
+  it('第一段后 stop：剩余段不再发送（只发 1 条）', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5]),
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+      fetchImpl: vi.fn(async () => llmOk('好。行！那就这样？')),
+    })
+    const s = land(ctx)
+    await landAndFetch(ctx, s)
+    expect(sentTexts(s)).toEqual(['好'])
+    ctx.runner.stop()
+    ctx.resolveSleep() // 段间 sleep 被 stop 截断后的收尾
+    await flush()
+    expect(sentTexts(s)).toEqual(['好'])
+    expect(ctx.runner.getState().hourCount).toBe(1)
+  })
+
+  it('第二段发送抛错：剩余段不发送、已发的一条照常记账', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5]),
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+      fetchImpl: vi.fn(async () => llmOk('好。行！那就这样？')),
+    })
+    const s = land(ctx)
+    let messages = 0
+    const original = s.send.bind(s)
+    s.send = (data) => {
+      const frame = JSON.parse(data)
+      if (frame.type === 'message') {
+        messages += 1
+        if (messages === 2) throw new Error('InvalidStateError')
+      }
+      return original(data)
+    }
+    await landAndFetch(ctx, s)
+    expect(sentTexts(s)).toEqual(['好'])
+    ctx.resolveSleep() // 段间 sleep 后第二段 send 抛错
+    await flush()
+    expect(sentTexts(s)).toEqual(['好'])
+    expect(ctx.runner.getState().hourCount).toBe(1)
+    expect(ctx.runner.getState().started).toBe(true)
+  })
+
+  it('段间收到 rate：cooling 后剩余段不再硬发', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5, 0.5]), // 最后一次是 penalize 的冷却骰
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+      fetchImpl: vi.fn(async () => llmOk('好。行！那就这样？')),
+    })
+    const s = land(ctx)
+    await landAndFetch(ctx, s)
+    expect(sentTexts(s)).toEqual(['好'])
+    s.emit({ type: 'rate' })
+    ctx.resolveSleep() // 段间 sleep 结束后看到 cooling
+    await flush()
+    expect(sentTexts(s)).toEqual(['好'])
+    expect(ctx.runner.getState().hourCount).toBe(1)
+    expect(ctx.runner.getState().status).toBe('cooling')
+  })
+})
+

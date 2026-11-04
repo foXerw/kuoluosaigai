@@ -318,54 +318,76 @@ export function createBotRunner({
       }
       // B7 双保险其一：在途期间切房/停机 → 响应作废（连打字延迟都不掷）
       if (!started || epoch !== roomEpoch) return
-      let text
+      let segments
       if (humanize) {
-        // T4 先不拆段（allowSegments:false）——分段由 Task 5 打开并补逐段发送。
-        const plan = planReply(res.text, { rng: humanizeRng, targetLen, allowSegments: false })
-        if (plan.silent) return // 模型选择沉默：不发送、不记账、不掷 typing/afk
-        text = plan.segments[0] ?? ''
+        // 沉默 → 整轮不发送、不记账、不掷 typing/afk（预算按“实际发出的消息”计）。
+        // drowsy 时不拆段：迷糊的人不会连珠炮。
+        const plan = planReply(res.text, { rng: humanizeRng, targetLen, allowSegments: !drowsy })
+        if (plan.silent) return
+        segments = plan.segments
       } else {
-        text = clampText(res.text) // B6：发送前必截（llm 只 trim 不截断）
+        const text = clampText(res.text) // B6：发送前必截（llm 只 trim 不截断）
+        segments = text ? [text] : []
       }
-      if (!text) return // B6：空回复不发
-      const typing = rhythm.typingDelay(text.length)
+      if (!segments.length) return // B6：空回复不发
+
+      // token 用量按「一次 LLM 调用」记一次；messages 按「实际发出的条数」逐条累加。
+      session = {
+        ...session,
+        promptTokens: session.promptTokens + res.promptTokens,
+        completionTokens: session.completionTokens + res.completionTokens,
+      }
+
+      const typing = rhythm.typingDelay(segments.join('').length)
       // 合计封顶 Math.min(think+typing, 15000)：第二段只补差值（drowsy 用加长后的 thinkMs）
       await sleep(Math.max(0, Math.min(typing, RHYTHM_DEFAULTS.totalDelayCapMs - thinkMs)))
       if (!started || epoch !== roomEpoch) return
       // B7 双保险其二：触发帧所在房必须仍是当前房
       if (job.frame && job.frame.roomId !== connection.currentRoomId) return
-      if (!connection.send({ type: 'message', text, badge })) return // 非 open 静默放弃
 
-      // —— 发送成功记账 ——
-      lastSentAt = now() // 终审 #5：排队轰炸防御的锚点
-      synthSeq += 1
-      buffer.push({
-        type: 'message',
-        // bot.id 段防家族跨 bot 撞号——否则两 bot 各有 local-1 且内容不同，
-        // 响应 history-req 时被 mergeHistory 误判「同 id 跨响应者冲突」双双丢弃（审查轮 1）
-        id: `local-${bot.id}-${synthSeq}`, // local- 前缀与服务器 id 命名空间隔离；服务器回显走 B3 丢弃不重复
-        ts: now(),
-        roomId: connection.currentRoomId,
-        nick,
-        badge,
-        text,
-      })
-      rev += 1
-      rhythm.noteSpoken() // 小时计数/最小间隔/AFK 掷骰推进（rhythm 内部记 rng 顺序）
-      rateStreak = 0 // 成功发言打断 rate 连续计数（B4「连续」口径）
-      cooling = false
-      session = {
-        promptTokens: session.promptTokens + res.promptTokens,
-        completionTokens: session.completionTokens + res.completionTokens,
-        messages: session.messages + 1,
+      for (let i = 0; i < segments.length; i++) {
+        if (i > 0) {
+          // 段间拟人停顿（spec §10.2“间隔抽延迟”）：固定 8s minGap 管不到同一轮的连发，
+          // 由 350–1200ms 的短停顿制造“想到一句发一句”的节奏。
+          await sleep(between(humanizeRng, HUMANIZE_DEFAULTS.segmentGapMs))
+          // 每段前复查：停机/切房/换房/被 rate 冷却——剩余段一律不发，绝不把旧房的话
+          // 带进新房，也不在限速冷却中硬发。
+          if (!started || epoch !== roomEpoch) return
+          if (job.frame && job.frame.roomId !== connection.currentRoomId) return
+          if (cooling) return
+        }
+        const text = segments[i]
+        if (!text) continue
+        if (!connection.send({ type: 'message', text, badge })) return // 非 open 静默放弃
+
+        // —— 每段发送成功各自记账 ——
+        lastSentAt = now() // 终审 #5：排队轰炸防御的锚点
+        synthSeq += 1
+        buffer.push({
+          type: 'message',
+          // bot.id 段防家族跨 bot 撞号——否则两 bot 各有 local-1 且内容不同，
+          // 响应 history-req 时被 mergeHistory 误判「同 id 跨响应者冲突」双双丢弃（审查轮 1）
+          id: `local-${bot.id}-${synthSeq}`, // local- 前缀与服务器 id 命名空间隔离；服务器回显走 B3 丢弃不重复
+          ts: now(),
+          roomId: connection.currentRoomId,
+          nick,
+          badge,
+          text,
+        })
+        rev += 1
+        rhythm.noteSpoken() // 小时计数/最小间隔/AFK 掷骰推进（rhythm 内部记 rng 顺序）
+        rateStreak = 0 // 成功发言打断 rate 连续计数（B4「连续」口径）
+        cooling = false
+        session = { ...session, messages: session.messages + 1 }
+        hourCount = rhythm.status().hourCount
+        patch({ rev, session: { ...session }, hourCount })
+        pushStatus()
+        // 自家消息 = 家族活动（终审 #7）：调度器对家族消息走 max 语义，不腰斩 idle 长窗
+        // R12：sent:true 是全局小时闸的计数判别位——只在发送侧自报这里出现；
+        // 观察路径不带此键。family 的调度语义不因 sent 增减而改变（sent 仅供计数）。
+        // 分段时逐条发事件：全局小时闸按“消息条数”记账，不是按“LLM 轮次”。
+        onEvent?.('activity', { roomId: connection.currentRoomId, family: true, sent: true })
       }
-      hourCount = rhythm.status().hourCount
-      patch({ rev, session: { ...session }, hourCount })
-      pushStatus()
-      // 自家消息 = 家族活动（终审 #7）：调度器对家族消息走 max 语义，不腰斩 idle 长窗
-      // R12：sent:true 是全局小时闸的计数判别位——只在发送侧自报这里出现；
-      // 观察路径不带此键。family 的调度语义不因 sent 增减而改变（sent 仅供计数）。
-      onEvent?.('activity', { roomId: connection.currentRoomId, family: true, sent: true })
     } finally {
       speaking = false
       const next = pendingJob
