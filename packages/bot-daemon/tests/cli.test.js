@@ -17,8 +17,10 @@ import { fileURLToPath } from 'node:url'
 
 import { validateConfig, ConfigLoadError, loadConfig } from '../config.js'
 import { createConfigWatcher } from '../watch.js'
-import { startControlServer } from '../rpc.js'
 import { main } from '../cli.js'
+// 注意：不**静态** import '../rpc.js'——cli.js 对 rpc.js 是延迟加载（启动模块图体积会
+// 挤占兄弟测试文件的 IO 窗口，见 cli.js 头注释）；本文件两条真回环用例在**测试体内**
+// await import，触发点落在 spawn 长测之后、watch.test 早已收工的时段。
 
 const SECRET = 'sk-SUPERSECRET-do-not-leak-9f3a'
 
@@ -832,6 +834,7 @@ it('status 真回环端到端（rpc.js 起真服务）：数据年龄、粘滞 r
     },
     bots: [],
   }
+  const { startControlServer } = await import('../rpc.js') // 延迟加载：见文件头注意
   const handle = await startControlServer({ dir, snapshot: () => snap, pid: 4242, startedAt: base })
   try {
     fs.writeFileSync(
@@ -884,6 +887,7 @@ it('status 真回环·401 实弹：rpc.json 的 secret 与在场 daemon 不一�
     meta: { deviceId: null, name: 'lab-vm', uptimeMs: 1000, globalHourCount: 7, restartRequired: false, generatedAt: base },
     bots: [],
   }
+  const { startControlServer } = await import('../rpc.js') // 延迟加载：见文件头注意
   const handle = await startControlServer({ dir, snapshot: () => snap })
   try {
     const doc = JSON.parse(fs.readFileSync(path.join(dir, 'rpc.json'), 'utf8'))

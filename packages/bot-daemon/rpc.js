@@ -47,6 +47,11 @@
 // 缺字段、port 不在 1..65535、secret 短于 32 hex、pid 非正整数）。判不出合法形状一律
 // malformed（= 陈旧，daemon 大概率已死），永不抛、异常文本不回显（A3 同 lock.js 的
 // parseHolderOrNull）。
+//
+// —— runStatus：控制面的读端也归本文件 ——
+// server 与 client 必须共享同一份协议形状（rpc.json 字段、header 名、URL、超时预算），
+// 拆在两个文件里就是让两份理解各自漂移的起点。CLI 的 status 子命令只做用法校验与
+// 退出码映射（cli.js），查询与渲染全在这（runStatus → statusRender）。
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -282,4 +287,162 @@ export async function startControlServer({
   }
 
   return { port: doc.port, secret: finalSecret, rpcPath, close }
+}
+
+// ============================================================================
+// —— status 客户端（控制面的读端；CLI 的 status 子命令经此落地，见 cli.js 的薄接线）——
+// 放在本文件的唯一理由：控制面的**形状知识**（rpc.json 字段、header 名、URL、三态文案的
+// 判据原料）集中在一处，server 与 client 不许对同一份协议各写一份理解。CLI 面只留
+// 用法校验与退出码映射。渲染与文案的钉死断言在 tests/cli.test.js（不动语义，只动归属）。
+// ============================================================================
+
+const STATUS_TIMEOUT_MS = 5000 // 控制口在同机回环上；秒级不响应=卡死。有界失败好过挂终端。
+
+function statusRender(o, snap, dataDir) {
+  const print = o.print
+  const meta = snap && typeof snap === 'object' && snap.meta && typeof snap.meta === 'object' ? snap.meta : null
+  const bots = snap && Array.isArray(snap.bots) ? snap.bots : null
+  if (!meta || !bots) {
+    o.printErr('FAIL: 控制口返回 200 但形状不是 {meta, bots}（版本错配？）——渲染面不做猜测，不输出半张表')
+    return false
+  }
+  // R26/R28/R31：粘滞位永远占第一行——「不可能看漏」这条验收写的就是 status 的输出面。
+  if (meta.restartRequired) {
+    print('!! restartRequired（粘滞位）：limits/serverUrl 一类变更要**重启 daemon 进程**才生效——当前进程仍在旧闸与旧地址上运行。')
+    print('!! 处置：重启本进程（systemd 托管就 systemctl restart）；此提示在进程重启前不会消失，也不会被热重载洗掉（R28）。')
+  }
+  print('saigai-bot status —— daemon「' + (typeof meta.name === 'string' ? meta.name : '(无名)') + '」（数据目录 ' + dataDir + '）')
+  // Q12 新鲜度口径：报「数据为 N 秒前」，不宣称与实时相等；>5s 就如实说超窗。
+  const nowFn = o.now || Date.now
+  const ageSec = Number.isFinite(meta.generatedAt) ? Math.max(0, Math.floor((nowFn() - meta.generatedAt) / 1000)) : null
+  if (ageSec === null) {
+    print('数据时点：未知（快照没带可解析的 generatedAt——渲染面不猜）')
+  } else if (ageSec > 5) {
+    print('数据为 ' + ageSec + ' 秒前——已超过 ≤5s 新鲜度口径（控制面按请求实时取数，不该这么旧：怀疑时钟跳变或 daemon 卡滞）')
+  } else {
+    print('数据为 ' + ageSec + ' 秒前（Q12 新鲜度口径：≤5s 视为新鲜）')
+  }
+  print('deviceId：' + (meta.deviceId === null || meta.deviceId === undefined ? 'null（P1 事实：设备令牌尚未铸造，非配对遗漏；字段在场≠已接线，R30）' : String(meta.deviceId)))
+  print('进程运行时长：' + (Number.isFinite(meta.uptimeMs) ? Math.floor(meta.uptimeMs / 1000) + ' 秒' : '未知'))
+  print('全局小时闸：' + (meta.globalHourCount === null || meta.globalHourCount === undefined ? '未配置（未安装≠未消耗，别读成 0）' : meta.globalHourCount + ' 条/已用（本小时）'))
+  print('restartRequired：' + (meta.restartRequired ? '有——见顶部 !! 横幅' : '无待进程重启的变更'))
+  if (bots.length === 0) {
+    print('bots：0（deck 空转，daemon 活着）')
+  } else {
+    print('bots：' + bots.length + ' 个（room 列为**有效房**非配置值，R20；nick 是服务器分配的身份）')
+    for (const b of bots) {
+      const s = b.session || {}
+      const lt = b.lifetime || {}
+      print(
+        '  ' +
+          b.id +
+          ' | ' +
+          b.name +
+          ' | 房 ' +
+          (b.room === null || b.room === undefined ? '?' : b.room) +
+          ' | ' +
+          (b.status || '?') +
+          ' | 昵称 ' +
+          (b.nick || '(未定)') +
+          ' | 小时计数 ' +
+          (Number.isFinite(b.hourCount) ? b.hourCount : '?') +
+          ' | 会话 p' +
+          (s.promptTokens !== undefined ? s.promptTokens : '?') +
+          '/c' +
+          (s.completionTokens !== undefined ? s.completionTokens : '?') +
+          '/' +
+          (s.messages !== undefined ? s.messages : '?') +
+          ' 条 | 累计 p' +
+          (lt.promptTokens !== undefined ? lt.promptTokens : '?') +
+          '/c' +
+          (lt.completionTokens !== undefined ? lt.completionTokens : '?'),
+      )
+    }
+  }
+  // Task 5 parked（孤儿无 GC + 手删不生效）：只读暴露 + 唯一正确清除路径，说人话。
+  let orphans = null
+  let orphanErr = null
+  try {
+    const store = o.createStore({ dir: dataDir })
+    orphans = store.readOrphans()
+  } catch (e) {
+    orphanErr = (e && (e.code || e.name)) || '未知'
+  }
+  if (orphanErr !== null) {
+    print('孤儿身份：未能读取 state.json（' + orphanErr + '）——不影响上方读数，如实说不知道')
+  } else {
+    const ids = Object.keys(orphans || {})
+    print('孤儿身份（state.orphans，Q2 防误删保留）：' + ids.length + ' 个' + (ids.length > 0 ? ' → ' + ids.join(', ') : ''))
+    if (ids.length > 0) {
+      print('  孤儿条目没有自动 GC；在**运行中的 daemon** 手改 state.json 删不掉它们——适配器按缓存基准重播，下一次写就复活。')
+      print('  唯一正确的清除路径：先停 daemon → 删除数据目录里的 state.json（等价 removeItem，身份与账目一并抹除）或换新的 --data-dir → 再启动。')
+    }
+  }
+  return true
+}
+
+/**
+ * status 子命令的真身：读 rpc.json → 带 secret 一次 GET /status（限时自断）→ 渲染。
+ * 失败分型文案互不相同（未在运行/读不出/陈旧/超时/401/HTTP 异常/坏 JSON/形状错），
+ * 调用方（cli.js）只做用法校验与退出码映射。输出零 secret、零 key 材料、零响应体回显。
+ * @param {{ dir: string, print: Function, printErr: Function, readRpcFile?: Function,
+ *   fetchImpl?: Function, createStore: Function, now?: () => number, statusTimeoutMs?: number }} o
+ * @returns {Promise<boolean>} true=成功渲染（退 0）；false=任一失败分型（退 1）
+ */
+export async function runStatus(o) {
+  const rpc = (o.readRpcFile || readRpcFile)({ dir: o.dir })
+  if (!rpc.ok) {
+    // 三条独立文案（派发钉的验收）：「没门牌」/「门牌读不动」/「门牌是陈旧的」。
+    if (rpc.why === 'missing') {
+      o.printErr('FAIL: ' + rpc.path + ' 不在——daemon 未在运行？（只有 saigai-bot run 会写它、干净关停时拆掉它）')
+    } else if (rpc.why === 'unreadable') {
+      o.printErr('FAIL: ' + rpc.path + ' 在场但读不出（权限/IO 故障）——daemon 未在运行，或数据目录没指对？')
+    } else {
+      o.printErr('FAIL: ' + rpc.path + ' 在场但解不出合法 {port,secret,pid,startedAt}——陈旧 rpc.json：daemon 死过一次没来得及摘牌？')
+    }
+    return false
+  }
+  const fetchImpl = o.fetchImpl || ((input, init) => globalThis.fetch(input, init))
+  const timeoutMs = typeof o.statusTimeoutMs === 'number' && o.statusTimeoutMs > 0 ? o.statusTimeoutMs : STATUS_TIMEOUT_MS
+  const url = 'http://127.0.0.1:' + rpc.info.port + '/status'
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let res
+  try {
+    res = await fetchImpl(url, { method: 'GET', headers: { [SECRET_HEADER]: rpc.info.secret }, signal: controller.signal })
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      o.printErr('FAIL: 控制口 127.0.0.1:' + rpc.info.port + ' 请求超时（' + timeoutMs + 'ms 内无响应）——已主动掐断，有界失败不挂死。daemon 卡滞或机器极忙？')
+    } else {
+      const why = (err && err.cause && err.cause.message) || (err && err.message) || '未知网络错误'
+      o.printErr('FAIL: 连不上 127.0.0.1:' + rpc.info.port + '（' + why + '）——陈旧 rpc.json：daemon 已死但没来得及摘牌。重启 daemon 或确认其不存在后删掉 ' + rpc.path)
+    }
+    return false
+  } finally {
+    clearTimeout(timer) // 超时定时器必清（Task 9 句柄纪律）
+  }
+  let text
+  try {
+    text = await res.text() // 非 200 也读完：keep-alive 套接字不许揣着未读 body 走人
+  } catch (err) {
+    o.printErr('FAIL: 读取控制口响应体失败（' + ((err && (err.code || err.name)) || '未知') + '）')
+    return false
+  }
+  if (res.status === 401) {
+    // 服务端对「缺 secret」与「错 secret」回**同一响应体**（A7 精神）——这里同样不猜是谁被拒，只说事实。
+    o.printErr('FAIL: 401——rpc.json 里的 secret 与在场 daemon 不匹配（多半是 daemon 重启后重铸了 secret、而你手上这份 rpc.json 是旧门牌的缓存）。重新跑一次 status 即可；仍 401 就检查数据目录里是否只有一份 saigai-bot 的 rpc.json')
+    return false
+  }
+  if (res.status !== 200) {
+    o.printErr('FAIL: 控制口返回 HTTP ' + res.status + '（预期 200）——端口在场但答复不对，这个 rpc.json 指向的未必是 saigai-bot 的控制口')
+    return false
+  }
+  let snap
+  try {
+    snap = JSON.parse(text)
+  } catch (e) {
+    o.printErr('FAIL: 控制口 200 响应体不是合法 JSON（不回显内容，A3）——端口被别的服务占了？')
+    return false
+  }
+  return statusRender(o, snap, o.dir)
 }
