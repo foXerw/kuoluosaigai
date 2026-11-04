@@ -109,6 +109,17 @@ describe('deploy/README.md（运行语义文档——这些行为看起来像 bu
       '尽力而为',
       // 10：doctor 回答 §5 未实测前提，FAIL 是真答案。
       '未实测',
+      // 审查轮 1 Important 1（key 轮换语义）：EnvironmentFile 只在服务启动时被读——
+      // 这句话被改回「热重载换 key」的假路径时，本锚当场报警。
+      'R40',
+      'systemd 只在服务启动时读 EnvironmentFile',
+      // 审查轮 1 Important 2（R40 实测口径）：无 type 祖先 = 能加载但刷警告，
+      // 真失败限 commonjs 祖先/老 Node——锚住这个关键词，防「默认必炸」回潮。
+      'MODULE_TYPELESS_PACKAGE_JSON',
+      // 审查轮 1 Minor 4（装包路线）：core 是 workspace 本地包，README 给的必须是
+      // 不过 registry 的路线，且诚实标注 VM 未实测。
+      'npm pack',
+      '尚未实测',
     ]
     for (const anchor of anchors) {
       expect(text, 'README 必须覆盖运行语义锚点「' + anchor + '」').toContain(anchor)

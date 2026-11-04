@@ -10,7 +10,16 @@
 
 ```bash
 # ① 装包（saigai-bot 进 PATH；engines: Node ≥ 22，裁定 D1 用原生 WebSocket、零运行时依赖）
-npm install -g ./packages/bot-daemon
+# 本步与 ③ 的 systemd-analyze verify 同类：**到 VM 上跑、尚未实测**。理由：
+# bot-daemon 依赖 kuoluosaigai-bot-core "*"——workspace 本地包、`private: true`、
+# 不在 registry 上，`npm install -g ./packages/bot-daemon` 这类要 npm 去 registry
+# 解析 "*" 的路线在干净 VM 上预期 E404。推荐离线路线（每步都不向 registry 拉 core）：
+#   开发机：npm pack packages/bot-core && npm pack packages/bot-daemon
+#   VM：   npm install -g ./kuoluosaigai-bot-core-<ver>.tgz ./kuoluosaigai-bot-daemon-<ver>.tgz
+# 两个 tarball 放进同一条命令，让 core 由在场 tarball 就地满足。首次部署请记录
+# npm 输出：若 "*" 仍被送去 registry 解析（E404），兜底路线 = VM 上 clone 本仓库 +
+# `npm ci` + 在 packages/bot-daemon 里 `npm link`（workspace 树内兄弟包已在场，
+# link 只补全局符号链接）。哪条路成真，回来更新本节——别在这里加没跑过的保证。
 
 # ② unit 就位
 sudo cp packages/bot-daemon/deploy/saigai-bot.service /etc/systemd/system/
@@ -36,11 +45,19 @@ saigai-bot status
 - **配置文件必须先存在**。`run` 对坏配置/缺配置一律拒起（退 1）；`Restart=always`
   下这表现为「每 5 秒重试一次的循环」——journal 里会有大声的 `FAIL: 配置读取失败
   （unreadable）`。这不是 daemon 疯了，是它拒绝带着坏配置裸奔（cli.js 启动序列②）。
-- **`.js` 配置文件的 ESM 判定**：Node 按「最近的 package.json 的 `type`」决定 `.js`
-  按 ESM 还是 CJS 解析。数据目录默认没有 package.json，`export default {…}` 会被当
-  CJS 拒收（退 1）。最省事的解法是在数据目录放一份只写着
-  `{ "type": "module" }` 的 `package.json`；或者改用 `.mjs` 文件名并在 unit 的
-  ExecStart 追加 `--config <路径>`。
+- **`.js` 配置文件的 ESM 判定（裁定 R40，实测口径）**：Node 按「最近的 package.json
+  的 `type`」解析 `.js`，两种结局要分清——
+  - **真失败**只有两种形态：祖先链上某个 package.json **显式声明 `"type": "commonjs"`**
+    （配置文件在那棵树之下），或 Node < 20.19（无语法探测）。此时 `export default`
+    被当 CJS 拒收，`run` 以 `FAIL: 配置读取失败（unparsable）` 退 1
+    （config.js `loadConfig` 分流、cli.js kind 如实透传）。
+  - **默认场景（各级祖先都没有 type 字段）**：Node ≥ 20.19（本包 engines ≥ 22 在场）
+    对 `.js` 做语法探测，`export default` 会**照常加载成功**——但 stderr 伴随
+    `MODULE_TYPELESS_PACKAGE_JSON` 警告；watcher 每轮 `?t=` 缓存击穿重导入
+    （config.js、watch.js 文件头）意味着 journal 可能在每次热重载时重复刷这条警告。
+  - 所以数据目录放一份 `{ "type": "module" }` 的小 `package.json`（或 `.mjs` 文件名 +
+    unit 里 `--config <路径>`）不是救命的解药，而是**从一开始就做对**的卫生动作：
+    消掉警告、不依赖语法探测兜底、也让上一种 commonjs 场景无从发生。
 
 ## 2. 数据目录与 unit 决策速览
 
@@ -83,9 +100,15 @@ export default {
 - unit 里有两条注入路径（选一条）：`EnvironmentFile=-/etc/saigai-bot/saigai-bot.env`
   （推荐，root:600，`-` = 缺文件不报错）；或注释示例 `Environment=KUO_LLM_KEY=sk-…`
   （代价：key 进 unit 文件与 `systemctl show` 可见）。
-- 热重载每轮**真重导入**配置文件、重读 env（watch.js 文件头「缓存击穿重导入」），
-  所以在 EnvironmentFile 里换 key → 保存该文件 → 让配置有一次真实内容变化（或重启
-  进程），换 key 即生效；provider 变更对在跑 runner 的影响见 §6.5/§7。
+- **两条通道别混：热重载换「配置内容」，进程重启才换「环境里的 key」**。watcher 每轮
+  **真重导入**配置文件（watch.js 文件头「缓存击穿重导入」、config.js `?t=` 缓存击穿），
+  `apiKey: process.env.KUO_LLM_KEY` 的表达式也随之重新求值——但重新求值读到的仍是
+  **本进程 exec 时刻冻结的环境**：systemd 只在服务启动时读 EnvironmentFile，运行中编辑
+  `/etc/saigai-bot/saigai-bot.env` **不会**改变活进程的 `process.env.KUO_LLM_KEY`。
+  所以换 key 的正确动作是：改 env 文件 → `systemctl restart saigai-bot`；只触发一次
+  热重载 = 带着旧 key 继续跑还以为换上了（进程内 env 不变，config.js 的求值再多次也
+  变不出新值）。热重载真正负责的是配置**内容**的变化（换 model、改 bots、换
+  baseUrl——其中 apiKey/baseUrl 对在跑 runner 的生效时机见 §6.5/§7）。
 - key 拿不到时**拒起不裸奔**：`apiKey` 为空/undefined 会校验失败退 1
   （config.js `provider.apiKey` 条目）。
 - 落盘与输出面：`state.json` 由适配器剥掉 `apiKey`（state.js 文件头）；日志器对键名
@@ -206,9 +229,10 @@ rpc.json 权限位难看对也别慌，去看 §6.10……它只影响谁能读�
 ### 6.10 status 的新鲜度与失败分型（Q12）
 `status` = 读 rpc.json → 带 secret 一次 `http://127.0.0.1:<port>/status` → 渲染。数据
 年龄按快照 `generatedAt` 如实报「N 秒前」（口径 ≤5s，不宣称与实时相等；超窗会明说
-超窗，怀疑时钟跳变/daemon 卡滞）。失败五连文案互不相同——「未在运行（rpc.json 不在）」/
-「读不出」/「陈旧解不出」/「连不上」/「超时」/「401 secret 不匹配」——按文案处置即可，
-不用猜退出码（都退 1）。陈旧 rpc.json（daemon 死过一次没摘牌）是正常演化，文案会教你删。
+超窗，怀疑时钟跳变/daemon 卡滞）。失败文案按类型互不相同——门牌三态（不在/读不出/
+解不出合法形状）、连不上、超时、body 读失败、401、非 200、200 但坏 JSON、200 但
+形状不是 `{meta, bots}`（rpc.js `runStatus`/`statusRender` 逐支独立文案）——按文案
+处置即可，不用猜退出码（全部退 1）。陈旧 rpc.json（daemon 死过一次没摘牌）是正常演化，文案会教你删。
 
 ## 7. 日常操作卡
 
