@@ -18,8 +18,6 @@ function seq(vals) {
     return vals[i++]
   }
 }
-const always = (v) => () => v
-
 describe('isSilence', () => {
   it('识别全部约定变体（含空白）', () => {
     for (const s of ['[沉默]', ' 【沉默】 ', '（沉默）', '(沉默)', '沉默']) {

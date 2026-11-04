@@ -130,9 +130,11 @@ export function createNullLease() {
  *     startupQuietMs?: number,                   // 刚上线静默窗（startedAt = deck 构造时刻）
  *     globalHourlyMessages?: number,             // Task 3 生效：配了才建跨 bot 单实例 hourAccountor（0=全时段闭嘴；坏值=未配置但构造期一次性 warn / R14）
  *   }, // Q9/§12 刹车：未配置 → 不建 gate，行为逐字节如现状（浏览器默认不启用）
+ *   humanize?: boolean, // P4：默认 true（真实宿主受益）；runner 直连仍默认 false（旧行为）
  *   deps?: {
  *     createRunner?: Function, createScheduler?: Function,
  *     sleep?: Function, WebSocketImpl?: Function,
+ *     humanizeRng?: Function, // P4：独立拟人随机流（测试注入；缺省 runner 用 Math.random）
  *     onEvent?: (type: 'error'|'warn', payload: object) => void, // Q7 宿主汇（daemon logger）
  *     // 载荷形状：runner 转发 = {botId, ...payload}；deck 级 schedule 配置告警（审查轮 1 #1）
  *     // = {reason} 且**省略 botId 键**（配置故障无主，缺席 ≠ null）——消费方不得假设键恒在。
@@ -149,6 +151,7 @@ export function createDeck({
   rng = Math.random,
   now = Date.now,
   schedule,
+  humanize = true, // P4：真实宿主（浏览器 BOT DECK / daemon）默认开启
   deps = {},
 } = {}) {
   // storage 无默认值：缺失即抛（Task 4 替换表第 4 条——core 不摸浏览器全局）
@@ -633,6 +636,10 @@ export function createDeck({
       sleep: deps.sleep,
       onState: (patch) => mergeState(item.id, patch),
       onEvent: (type, payload) => handleEvent(item.id, type, payload),
+      // P4：拟人管道默认开；独立 humanizeRng 只在宿主显式注入时下传（否则 runner 用
+      // Math.random），绝不复用上面的 rng——rhythm 的逐值 rng 断言依赖那条流不变。
+      humanize: humanize !== false,
+      ...(typeof deps.humanizeRng === 'function' ? { humanizeRng: deps.humanizeRng } : {}),
       // Q9/§12：gate 仅在宿主传了 schedule 时出现；不传连键都不加（runner opts
       // 形状与既往逐字节一致，浏览器零变化的另一半保证）。
       ...(gate ? { gate } : {}),

@@ -117,6 +117,35 @@ describe('createDeck（store 逻辑的宿主无关核心，Task 4）', () => {
     expect(() => createDeck({})).toThrow(/storage/)
   })
 
+  it('P4 humanize 默认 true 并下传 runner；可显式关闭；humanizeRng 原样透传', async () => {
+    const seen = []
+    const hr = () => 0.5
+    const deck = createDeck({
+      storage: new Mapish(),
+      humanize: false,
+      deps: {
+        humanizeRng: hr,
+        createRunner: (o) => { seen.push(o); return fakeRunner() },
+      },
+    })
+    deck.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await deck.startBot('bot-0')
+    expect(seen[0].humanize).toBe(false)
+    expect(seen[0].humanizeRng).toBe(hr)
+    deck.dispose()
+
+    const seen2 = []
+    const deck2 = createDeck({
+      storage: new Mapish(),
+      deps: { createRunner: (o) => { seen2.push(o); return fakeRunner() } },
+    })
+    deck2.addBot({ id: 'bot-0', name: '小李', roomId: 'nebula' })
+    await deck2.startBot('bot-0')
+    expect(seen2[0].humanize).toBe(true)
+    expect('humanizeRng' in seen2[0]).toBe(false)
+    deck2.dispose()
+  })
+
   // (e) Q7 观测端口（P1 Task 1）：deps.onEvent 宿主汇收到 (type, {botId, ...payload})。
   // 发射端契约由 botRunner.test.js 钉死；本组用例只钉 deck→宿主 转发这一段：
   // error/warn 转、活动类内部事件（activity/nick/stopped）不转、不注入时不抛。

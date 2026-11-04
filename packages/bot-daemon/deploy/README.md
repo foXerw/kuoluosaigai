@@ -255,6 +255,14 @@ watcher 每轮用 `?t=` 缓存击穿**真重导入**配置文件（config.js `lo
 要防的是手滑：`run` 与 `--once`、systemd 与手动终端，务必用同一个数据目录；unit 里
 `Environment=HOME=/var/lib/saigai-bot` 已把默认路径钉死（§2），别在日常操作上覆盖它。
 
+### 6.13 P4 拟人化默认生效，没有配置开关
+`bot-core` 的 `createDeck` 自 P4 起默认 `humanize: true`：daemon 与浏览器 BOT DECK 都走
+transcript 单条上下文、Tieba few-shot、目标字数、沉默选项、分段连发（≤4 段、段间
+350–1200ms）与语气处理。这不是回归。直连 `createBotRunner` 的嵌入式消费者仍默认
+`humanize: false`（旧行为零变化）。静默窗内被点名回复会进入「迷糊层」：思考 ×2、
+目标字数 ≤8、不拆段。**分段逐条计入 `hourlyBudget` 与全局 `globalHourlyMessages`**——
+同样的 LLM 轮次会比 P1 多烧 1–4 条消息额度，这是 spec §10.2 的预期，不是记账 bug。
+
 ## 7. 日常操作卡
 
 ```bash

@@ -364,6 +364,26 @@ MiniMax 系列、OpenRouter 上的 RP 微调）把口语 register 当主场。
 ① 现状 ② transcript 单条 ③ 现状 + few-shot 例句 ④ ②+③+长度目标。
 spike 为一次性脚本、不写测试、不进主线；结论写回本节再决定 P4 的实现范围。
 
+### 10.5 实现状态（2026-11-05）：跳过 spike，直接落地
+
+**用户裁定**：不再等四变体盲评，直接以「公开 Tieba 语料抽样」做 few-shot 并实现机制。
+这条裁定同时解决了 §16.6 的 Q6（不再需要采集本站任何用户消息）。
+计划与逐任务记录：`docs/superpowers/plans/2026-11-05-saigai-bot-p4-humanize.md`。
+
+- **语料**：`packages/bot-core/humanize-corpus.js`，40 条人工筛选的公开贴吧短句
+  （MIT 仓库 `exusiaiwei/supp-social-media-style-2023`），入库前过滤链接/联系方式/
+  长数字/PII/辱骂/政治色情暴力；只作 few-shot，不在运行时抓取。
+- **已实现**：transcript 单条（他人连续消息压成一条 user，self 连续段保留 assistant）、
+  few-shot system prompt、目标字数抽样 + 二次截断、沉默选项（`[沉默]`，不发送不记账）、
+  分段连发（≤4 段，段间 350–1200ms，逐条记账）、语气杂质（句号概率去掉/概率括号）、
+  迷糊层（静默窗内被点名：思考 ×2、目标 ≤8、不拆段）。
+- **默认面**：`createDeck` 的 `humanize` 默认 true（浏览器与 daemon 同步受益）；
+  `createBotRunner` 直连默认 false（旧行为零变化）；`humanizeRng` 是独立随机流，
+  不复用 rhythm 的 rng。
+- **未做（原范围）**：长期记忆/关系/生活事件、破限/出戏容忍、复读机制。
+- **已知代价**：分段使同样轮次的消息条数变多，小时预算与全局闸按**实际消息条数**计；
+  few-shot 让每次请求的 prompt 多几百 token。
+
 ---
 
 ## 11. P3 — 控制中继与多设备接管（唯一改聊天服务器的一层，故排最后）
