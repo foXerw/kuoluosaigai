@@ -236,6 +236,31 @@ it('snapshot 抛异常 → 500 固定响应体：异常文本（可能内嵌输�
   })
 })
 
+it('snapshot 返回 JSON.stringify 炸得动的值（BigInt）→ 500 固定体、处理器活着（连续两次都答，不是 uncaughtException）——Important 2：序列化面也归请求路径的兜底', async () => {
+  const bad = () => ({ big: 10n }) // BigInt 进 JSON.stringify 必 throw TypeError
+  await withServer({ snapshot: bad }, async (handle) => {
+    const first = await rawRequest(handle.port, { headers: { [SECRET_HEADER]: handle.secret } })
+    expect(first.status).toBe(500)
+    expect(JSON.parse(first.text)).toEqual({ error: 'snapshot-unavailable' })
+    const second = await rawRequest(handle.port, { headers: { [SECRET_HEADER]: handle.secret } })
+    expect(second.status).toBe(500) // 处理器没被第一次炸死——服务继续应答
+  })
+})
+
+it('拒绝绑 ::1（Minor 3：allowlist 与 client 面一致——rpc.json 形状里没有 host 字段，v6 回环绑了 status 也够不着，不留半截协议）', async () => {
+  const dir = freshDir()
+  let err = null
+  let handle = null
+  try {
+    handle = await startControlServer({ dir, host: '::1', snapshot: () => ({}) })
+    err = null
+  } catch (e) {
+    err = e
+  }
+  if (handle) await handle.close() // 修复前（allowlist 还含 ::1）：此处红，且已把泄漏的监听收口
+  expect(err !== null && /回环/.test(String(err.message))).toBe(true)
+})
+
 // —— readRpcFile（status 的三态判据原料）——
 
 it('readRpcFile：缺文件→missing；坏 JSON/非法字段→malformed；EISDIR→unreadable——三态齐全、永不抛、不回显盘上内容', () => {

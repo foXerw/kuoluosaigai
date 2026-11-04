@@ -820,6 +820,28 @@ it('status 渲染面：401 体不带诊断信息时也不印响应体（A3 不�
   expect(weird.errs.join('\n')).toContain('形状')
 })
 
+it('status 响应体阶段的超时也有界（Important 1）：头部秒回、body 永不完成 → 计时预算压到 text() 落地才解除，掐断退 1 报「超时」', async () => {
+  const c = ctx({})
+  const deps = Object.assign({}, c.deps, {
+    readRpcFile: () => RPC_OK,
+    statusTimeoutMs: 20,
+    fetchImpl: (url, init) =>
+      Promise.resolve({
+        status: 200, // 头部这侧「赢了」——旧实现此刻已 clearTimeout，body 阶段再无预算约束
+        text: () =>
+          new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => {
+              reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
+            })
+          }),
+      }),
+  })
+  const t0 = Date.now()
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], deps)).toBe(1)
+  expect(c.errs.join('\n')).toContain('超时')
+  expect(Date.now() - t0).toBeLessThan(2000) // 修复前：这条永远等不到收口（vitest 超时=本用例天然能红）
+})
+
 it('status 真回环端到端（rpc.js 起真服务）：数据年龄、粘滞 restartRequired 置顶、孤儿 id+数量+正确清除路径、输出零 secret 零 apiKey', async () => {
   const dir = freshDir()
   const base = 1730000000000

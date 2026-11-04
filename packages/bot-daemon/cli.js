@@ -73,6 +73,9 @@ import { runDoctor } from './doctor.js'
 // 真被用到时才发生，且都短路于注入面）：控制面模块进不进 CLI 的启动模块图，在 CI 里
 // 实测会挤占同工程其它测试文件的真实 IO 窗口（Task 10 审查素材见 task-10-report.md）。
 // 缺省件在两个使用点各自现取，注入面（测试）永远短路、零成本。
+// R36 前瞻：watch.test.js 的计数型 drainTo 改为墙钟 deadline 落地后，本行「测试时序」
+// 理由即失效——届时延迟加载只保留「模块边界卫生 + 注入短路零成本」这层真价值，
+// 改动者请按当时事实更新这段注释，勿把测试时序辩护化石化成设计。
 
 export const EXIT_OK = 0
 export const EXIT_FAIL = 1
@@ -500,7 +503,15 @@ async function statusCommand(rest, d) {
     return EXIT_USAGE
   }
   const { dataDir } = resolvePaths(opts, d)
-  const { runStatus } = await import('./rpc.js')
+  // 延迟加载本身失败也要走「status 失败=退 1 带分型文案」的同一模式（审查轮 1 Minor 2）：
+  // bin 的兜底会大声退 1，但那是最后防线，不豁免这一层。
+  let runStatus
+  try {
+    runStatus = (await import('./rpc.js')).runStatus
+  } catch (err) {
+    d.printErr('FAIL: status 未能加载控制面模块（' + ((err && (err.code || err.name)) || '未知原因') + '）——安装/运行环境破损？')
+    return EXIT_FAIL
+  }
   const ok = await runStatus({
     dir: dataDir,
     print: d.print,

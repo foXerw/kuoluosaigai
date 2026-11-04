@@ -62,9 +62,12 @@ export const RPC_FILE_NAME = 'rpc.json'
 export const SECRET_HEADER = 'x-saigai-secret'
 export const READ_BODY_LIMIT = 8192 // 状态查询没有 body；上限只为「谁乱塞」兜底，不是配额
 
-// 回环 allowlist 是**写死的两条**（A3）：'localhost' 不进表——hosts 文件可以把它指到
-// 任何地址，控制面不接受这种「名字随缘」。
-const LOOPBACK_HOSTS = ['127.0.0.1', '::1']
+// 回环 allowlist 是**写死的表**（A3）：'localhost' 不进表——hosts 文件可以把它指到
+// 任何地址，控制面不接受这种「名字随缘」。'::1' 也已**移出**（审查轮 1 Minor 3）：
+// client 面（runStatus）拼的是字面 http://127.0.0.1:，而 rpc.json 的协议形状里没有
+// host 字段——v6 绑上就是一张 status 永远够不着的门牌，协议两半必须一致。
+// 若将来真需要 v6：rpc.json 加 host 字段属于**形状变更**，须先过裁定再动。
+const LOOPBACK_HOSTS = ['127.0.0.1']
 
 const UNAUTHORIZED_BODY = JSON.stringify({ error: 'unauthorized' }) // 缺/错 secret 共用（A7 精神）
 const NOT_FOUND_BODY = JSON.stringify({ error: 'not-found' })
@@ -198,14 +201,24 @@ export async function startControlServer({
         sendJson(res, 405, METHOD_NOT_ALLOWED_BODY)
         return
       }
-      let snap
+      // 整个「取数→序列化→出报」同一条 try（审查轮 1 Important 2）：'request' 回调里的
+      // 任何同步抛（snapshot、JSON.stringify 对 BigInt/循环值、写头后的 end 边角）都会
+      // 逸出成 uncaughtException——控制面炸穿 bot 面是 A3 不变量的反面，只防构造期不够，
+      // 请求路径同样要兜住。
       try {
-        snap = snapshot()
+        const snap = snapshot()
+        sendJson(res, 200, JSON.stringify(snap))
       } catch (e) {
-        sendJson(res, 500, SNAPSHOT_FAIL_BODY) // 固定体：异常文本可能带切片（A3），绝不外泄
-        return
+        if (!res.headersSent) {
+          sendJson(res, 500, SNAPSHOT_FAIL_BODY) // 固定体：异常文本可能带切片（A3），绝不外泄
+        } else {
+          try {
+            res.end()
+          } catch (e2) {
+            /* 响应面已半程破损：吞，socket 层由 server 收口 */
+          }
+        }
       }
-      sendJson(res, 200, JSON.stringify(snap))
     })
   }
 
@@ -407,42 +420,54 @@ export async function runStatus(o) {
   const url = 'http://127.0.0.1:' + rpc.info.port + '/status'
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-  let res
+  function timeoutLine() {
+    o.printErr('FAIL: 控制口 127.0.0.1:' + rpc.info.port + ' 请求超时（' + timeoutMs + 'ms 内无响应）——已主动掐断，有界失败不挂死。daemon 卡滞或机器极忙？')
+  }
+  // 计时预算覆盖**头部与 body 两个阶段**，直到读数落定才解除（审查轮 1 Important 1）：
+  // 占住端口的别的服务（陈旧门牌 + 端口复用的可达形态）可以「秒回头部、永不交 body」——
+  // 旧实现在 fetch 落定就 clearTimeout，那条路径等于让 status 无限等。
   try {
-    res = await fetchImpl(url, { method: 'GET', headers: { [SECRET_HEADER]: rpc.info.secret }, signal: controller.signal })
-  } catch (err) {
-    if (err && err.name === 'AbortError') {
-      o.printErr('FAIL: 控制口 127.0.0.1:' + rpc.info.port + ' 请求超时（' + timeoutMs + 'ms 内无响应）——已主动掐断，有界失败不挂死。daemon 卡滞或机器极忙？')
-    } else {
-      const why = (err && err.cause && err.cause.message) || (err && err.message) || '未知网络错误'
-      o.printErr('FAIL: 连不上 127.0.0.1:' + rpc.info.port + '（' + why + '）——陈旧 rpc.json：daemon 已死但没来得及摘牌。重启 daemon 或确认其不存在后删掉 ' + rpc.path)
+    let res
+    try {
+      res = await fetchImpl(url, { method: 'GET', headers: { [SECRET_HEADER]: rpc.info.secret }, signal: controller.signal })
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        timeoutLine()
+      } else {
+        const why = (err && err.cause && err.cause.message) || (err && err.message) || '未知网络错误'
+        o.printErr('FAIL: 连不上 127.0.0.1:' + rpc.info.port + '（' + why + '）——陈旧 rpc.json：daemon 已死但没来得及摘牌。重启 daemon 或确认其不存在后删掉 ' + rpc.path)
+      }
+      return false
     }
-    return false
+    let text
+    try {
+      text = await res.text() // 非 200 也读完：keep-alive 套接字不许揣着未读 body 走人
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        timeoutLine()
+      } else {
+        o.printErr('FAIL: 读取控制口响应体失败（' + ((err && (err.code || err.name)) || '未知') + '）')
+      }
+      return false
+    }
+    if (res.status === 401) {
+      // 服务端对「缺 secret」与「错 secret」回**同一响应体**（A7 精神）——这里同样不猜是谁被拒，只说事实。
+      o.printErr('FAIL: 401——rpc.json 里的 secret 与在场 daemon 不匹配（多半是 daemon 重启后重铸了 secret、而你手上这份 rpc.json 是旧门牌的缓存）。重新跑一次 status 即可；仍 401 就检查数据目录里是否只有一份 saigai-bot 的 rpc.json')
+      return false
+    }
+    if (res.status !== 200) {
+      o.printErr('FAIL: 控制口返回 HTTP ' + res.status + '（预期 200）——端口在场但答复不对，这个 rpc.json 指向的未必是 saigai-bot 的控制口')
+      return false
+    }
+    let snap
+    try {
+      snap = JSON.parse(text)
+    } catch (e) {
+      o.printErr('FAIL: 控制口 200 响应体不是合法 JSON（不回显内容，A3）——端口被别的服务占了？')
+      return false
+    }
+    return statusRender(o, snap, o.dir)
   } finally {
-    clearTimeout(timer) // 超时定时器必清（Task 9 句柄纪律）
+    clearTimeout(timer) // 定时器必清且只在读数落定后清（Task 9 句柄纪律 + Important 1 闭环）
   }
-  let text
-  try {
-    text = await res.text() // 非 200 也读完：keep-alive 套接字不许揣着未读 body 走人
-  } catch (err) {
-    o.printErr('FAIL: 读取控制口响应体失败（' + ((err && (err.code || err.name)) || '未知') + '）')
-    return false
-  }
-  if (res.status === 401) {
-    // 服务端对「缺 secret」与「错 secret」回**同一响应体**（A7 精神）——这里同样不猜是谁被拒，只说事实。
-    o.printErr('FAIL: 401——rpc.json 里的 secret 与在场 daemon 不匹配（多半是 daemon 重启后重铸了 secret、而你手上这份 rpc.json 是旧门牌的缓存）。重新跑一次 status 即可；仍 401 就检查数据目录里是否只有一份 saigai-bot 的 rpc.json')
-    return false
-  }
-  if (res.status !== 200) {
-    o.printErr('FAIL: 控制口返回 HTTP ' + res.status + '（预期 200）——端口在场但答复不对，这个 rpc.json 指向的未必是 saigai-bot 的控制口')
-    return false
-  }
-  let snap
-  try {
-    snap = JSON.parse(text)
-  } catch (e) {
-    o.printErr('FAIL: 控制口 200 响应体不是合法 JSON（不回显内容，A3）——端口被别的服务占了？')
-    return false
-  }
-  return statusRender(o, snap, o.dir)
 }
