@@ -82,6 +82,11 @@ function fakeLogger() {
   }
 }
 
+// R36（Task 11 落地）：真实 IO 排干窗的**墙钟**基准。在模块求值期绑定原生的
+// performance.now——之后 vi.useFakeTimers() 无论是否接管 performance/Date，拿到的
+// 都是真时间（假时钟拨不动真实 import 的落地节奏，排干窗必须用真钟量）。
+const realNow = performance.now.bind(performance)
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(0)
@@ -285,12 +290,18 @@ describe('Task 8：配置热重载 watcher（轮询 + debounce + 坏读不动作
       // 假时钟能拨 debounce/轮询，拨不动真实 import 的事件循环回合：每步推进后用一个
       // 真 IO 自旋把挂起的模块读取排干（条件满足即止，非固定 sleep），两次连续轮询
       // 才可能在假时间轴上对齐成"稳定"。
+      // R36 硬化（Task 11）：窗口从"计数 100 轮"改为"墙钟 200ms deadline"。计数版的
+      // 窗口宽度 = 轮数 × 单轮 stat 耗时，会随同工程兄弟测试文件落入共享 Vite transform
+      // 流水线的模块图大小波动（Task 10 实测：一次 cli.js 编辑就能让它因非 bug 原因变红）；
+      // deadline 版的窗口宽度是真实毫秒，轮数只是心跳。证明力不变：cond 仍必须真兑现，
+      // 缓存击穿若坏，import 永远读到旧 key → 第二次 settle 等不到 → deadline 到期仍红。
       const drainTo = async (cond, label) => {
-        for (let i = 0; i < 100; i += 1) {
+        const deadline = realNow() + 200
+        for (;;) {
           await fs.promises.stat(file)
           if (cond()) return
+          if (realNow() >= deadline) throw new Error('真实 IO 排干失败：' + label)
         }
-        throw new Error('真实 IO 排干失败：' + label)
       }
       process.env.KUO_LLM_KEY = 'sk-KEY-ONE-0001'
       w = createConfigWatcher({

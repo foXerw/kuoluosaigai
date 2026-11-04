@@ -345,7 +345,9 @@ const IO_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ENOTDIR', 'ERR_M
 // lock.js 拒 rethrow parse 文本、core runner 在发射点 redact。净化只留三样：内核/模块 code、
 // 错误 name、纯数字定位（position/line/column）——满足 Review Focus #1「指出行位」；
 // 完整原文一律在 err.cause。
-function summarizeThrown(err) {
+// Task 11 起对 log.js **导出**（导出的是既有实现，逻辑零改动）：任何要打印 err.cause 的新代码
+// 必须复用这个过滤器——逐字输出 cause.message 等于把 R33 关掉的泄漏隔一层重开。
+export function summarizeThrown(err) {
   const code = err && typeof err.code === 'string' ? err.code : null
   const name = err && err.name ? String(err.name) : 'Error'
   const raw = err && err.message ? String(err.message) : ''

@@ -58,7 +58,8 @@
 // load/acquireLock/createStore/createHost/createWatcher/onSignal/homedir/now/sleep/
 // fetchImpl/WebSocketImpl/createRunner/startControlServer/readRpcFile/statusTimeoutMs/
 // print/printErr/logger 全是 deps 参数，缺省接真件。
-// logger 缺省是**不会抛**的极简 console 包装（Task 1 的 sink 免疫教训；真结构化日志归 Task 11）。
+// logger 缺省 = createLogger（Task 11 真身）：结构化 stdout 一行一 JSON + apiKey 双策略脱敏 +
+// sink 免疫（Task 1 教训做进日志器本体，safeConsoleLogger 顶位实现已退役）。
 
 import os from 'node:os'
 import path from 'node:path'
@@ -69,13 +70,14 @@ import { createFileStateStore } from './state.js'
 import { createDaemonHost } from './host.js'
 import { createConfigWatcher } from './watch.js'
 import { runDoctor } from './doctor.js'
+import { createLogger } from './log.js'
 // rpc.js 是**延迟加载**（`await import('./rpc.js')` 只在 run 的控制面接线与 status 查询
 // 真被用到时才发生，且都短路于注入面）：控制面模块进不进 CLI 的启动模块图，在 CI 里
 // 实测会挤占同工程其它测试文件的真实 IO 窗口（Task 10 审查素材见 task-10-report.md）。
 // 缺省件在两个使用点各自现取，注入面（测试）永远短路、零成本。
-// R36 前瞻：watch.test.js 的计数型 drainTo 改为墙钟 deadline 落地后，本行「测试时序」
-// 理由即失效——届时延迟加载只保留「模块边界卫生 + 注入短路零成本」这层真价值，
-// 改动者请按当时事实更新这段注释，勿把测试时序辩护化石化成设计。
+// R36 已退役（Task 11）：watch.test.js 的 IO 排干窗从计数型改为墙钟 deadline 后，「模块图
+// 大小挤占兄弟测试时序」这条理由不再成立——本行延迟加载保留的是「模块边界卫生 + 注入短路
+// 零成本」这层真价值。历史回退实验见 task-10-report.md，勿再据旧注释援引测试时序。
 
 export const EXIT_OK = 0
 export const EXIT_FAIL = 1
@@ -113,22 +115,6 @@ const USAGE = [
   '        3 单实例锁被占用；4 关停有步骤失败（state.json 冲刷可能未落盘）。',
 ].join('\n')
 
-// —— 不会抛的 console 包装（Task 11 造真身之前顶用；EPIPE/磁盘满不许带走进程）——
-function safeConsoleLogger() {
-  function wrap(method) {
-    return (msg, fields) => {
-      try {
-        const fn = typeof console[method] === 'function' ? console[method] : console.log
-        if (fields === undefined) fn.call(console, msg)
-        else fn.call(console, msg, fields)
-      } catch (e) {
-        /* sink 免疫：吞。日志器死了不许陪葬 daemon（host.js 同款教训）。 */
-      }
-    }
-  }
-  return { info: wrap('log'), warn: wrap('warn'), error: wrap('error') }
-}
-
 function safePrint(fn) {
   return (line) => {
     try {
@@ -144,7 +130,7 @@ function withDefaults(deps) {
   return {
     print: d.print || safePrint((line) => console.log(line)),
     printErr: d.printErr || safePrint((line) => console.error(line)),
-    logger: d.logger || safeConsoleLogger(),
+    logger: d.logger || createLogger(),
     load: d.load || ((p) => loadConfig(p)),
     acquireLock: d.acquireLock || acquireLock,
     createStore: d.createStore || createFileStateStore,
@@ -426,7 +412,9 @@ async function runCommand(rest, d) {
     try {
       // 注入面在场即短路，`||` 右侧的 await import 不发生（测试零真口的实现基础）。
       const bootControl = d.startControlServer || (await import('./rpc.js')).startControlServer
-      control = await bootControl({ snapshot: () => host.snapshot(), dir: dataDir })
+      // Task 11/Handoff 3（Task 10 parked Minor 1）：控制面必须能把 500 打进日志——
+      // status 是操作者的眼睛，它坏了不许零痕迹（rpc.js 只在 500 路径调 logger.warn，常量文本）。
+      control = await bootControl({ snapshot: () => host.snapshot(), dir: dataDir, logger: d.logger })
       d.logger.info('控制服务已就绪 127.0.0.1:' + control.port + '（rpc.json 已落 ' + dataDir + '；secret 只在那份文件里，不进日志）')
     } catch (err) {
       control = null

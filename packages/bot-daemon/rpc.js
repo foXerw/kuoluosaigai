@@ -146,6 +146,9 @@ export function readRpcFile({ dir, fileName = RPC_FILE_NAME } = {}) {
  *   secret?: string,                            // 缺省 randomHex(16)；注入也须 ≥32 hex
  *   readBodyLimit?: number,                     // 请求体字节上限（数而不存，超限 413）
  *   pid?: number, startedAt?: number,           // rpc.json 记账字段（测试可注入）
+ *   logger?: { warn: Function },                // Task 11 接线（Task 10 parked Minor 1）：
+ *                                               // 可选注入，仅在 500 路径出声——常量文本，
+ *                                               // 零请求/响应内容。不注入行为逐字节不变。
  * }} options
  * @returns {Promise<{ port: number, secret: string, rpcPath: string, close: () => Promise<void> }>}
  */
@@ -157,6 +160,7 @@ export async function startControlServer({
   readBodyLimit = READ_BODY_LIMIT,
   pid = process.pid,
   startedAt = Date.now(),
+  logger = null,
 } = {}) {
   if (typeof snapshot !== 'function') throw new TypeError('startControlServer: snapshot 必须是函数（Task 7 host.snapshot 的接线面）')
   if (typeof dir !== 'string' || dir === '') throw new TypeError('startControlServer: dir 必填（rpc.json 落数据目录）')
@@ -209,6 +213,16 @@ export async function startControlServer({
         const snap = snapshot()
         sendJson(res, 200, JSON.stringify(snap))
       } catch (e) {
+        // Task 11（Task 10 parked Minor 1）：status 是操作者的眼睛，它坏了必须留痕——
+        // 只在 catch 入径出声，**常量文本、零请求/响应/异常内容**（A3：异常文本可能带切片）。
+        // 日志器自身炸不许拦 500 响应（sink 免疫贯穿接线，Task 1 教训）。
+        try {
+          if (logger && typeof logger.warn === 'function') {
+            logger.warn('控制面 GET /status 快照或序列化失败（请求面兜底）', { endpoint: '/status' })
+          }
+        } catch (e2) {
+          /* 吞。 */
+        }
         if (!res.headersSent) {
           sendJson(res, 500, SNAPSHOT_FAIL_BODY) // 固定体：异常文本可能带切片（A3），绝不外泄
         } else {
