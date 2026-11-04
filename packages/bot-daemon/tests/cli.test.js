@@ -587,7 +587,7 @@ it('spawn blackhole：黑洞 WS 端点下 doctor 超时判 FAIL 后必须自行�
 // 轮 1 的空转自纠：SECRET 全串（31 字符）**从不**出现在原始 message 里——V8 的输入切片窗口
 // 只有 ~10 字符+省略号。故 `not.toContain(SECRET)` 在净化器回归时也能绿=真空守卫。
 // 针（needle）改为真实泄漏形态：窗口前缀 + 切片措辞；每面单独成 it，净化器一旦被拆掉，
-// **三面各自变红**（轮 2 用回退实验逐面验证，见 task-9-report.md Fix Round 2）。
+// **三面各自变红**（轮 2 用回退实验逐面验证过：临时拆掉构造点净化，三个 it 独立转红再还原）。
 
 const LEAK_WINDOW = SECRET.slice(0, 10) // 'sk-SUPERSE'——V8 实际嵌进原始 message 的窗口内容
 const RAW_PHRASE = 'Unexpected token' // 切片形态的措辞头，净化层必须剥掉

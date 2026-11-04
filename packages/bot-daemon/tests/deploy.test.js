@@ -83,7 +83,7 @@ describe('deploy/README.md（运行语义文档——这些行为看起来像 bu
     expect(readRequired(README_PATH)).toContain('systemd-analyze verify')
   })
 
-  it('十条运行语义与裁定标签逐一在场', () => {
+  it('十二条运行语义与裁定标签逐一在场', () => {
     const text = readRequired(README_PATH)
     const anchors = [
       // 1/2：§8.4 两类「重启即丢」——会话缓冲纯内存、小时计数不持久。
@@ -120,6 +120,10 @@ describe('deploy/README.md（运行语义文档——这些行为看起来像 bu
       // 不过 registry 的路线，且诚实标注 VM 未实测。
       'npm pack',
       '尚未实测',
+      // 修文波 6 号（两条新增）：6.11 热重载死模块累积（§8.1 接受面 + §8.6 浸泡观测
+      // 不得误判成泄漏）；6.12 锁的数据目录作用域（两个 --data-dir 双跑）。
+      '死模块',
+      '作用域是**数据目录**',
     ]
     for (const anchor of anchors) {
       expect(text, 'README 必须覆盖运行语义锚点「' + anchor + '」').toContain(anchor)

@@ -90,6 +90,9 @@ function describeImpurity(v) {
  * 允许：string/number/boolean/null/undefined、纯对象、数组、Object.create(null)；
  * 拒绝：函数、symbol、bigint、类实例（原型不是 Object.prototype/null）、`__proto__` 自属键、
  * 循环引用。读 env（process.env.X）求值后只剩普通字符串/undefined，天然放行——这是钉死的合法写法。
+ * **按路径判环**（终审 1 号，log.js scrub 同款纪律）：seen 记录的是当前递归路径，进入时加、
+ * 离开时弹——同一纯对象被两处合法引用（共享子对象）不是环，只进不出的 seen 会误报
+ * 「循环引用」并借短路吞掉其余一切字段错误。类实例在入路径之前就判完，两处共享各报各的。
  */
 function scanImpurity(value, label, found, seen) {
   const t = typeof value
@@ -103,12 +106,12 @@ function scanImpurity(value, label, found, seen) {
     found.push(label + ': 必须是纯数据（循环引用）')
     return
   }
-  seen.add(value)
   const proto = Object.getPrototypeOf(value)
   if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
     found.push(label + ': 必须是纯数据（发现' + describeImpurity(value) + '）')
     return
   }
+  seen.add(value)
   const isArray = Array.isArray(value)
   for (const key of Object.keys(value)) {
     if (key === '__proto__') {
@@ -117,6 +120,7 @@ function scanImpurity(value, label, found, seen) {
     }
     scanImpurity(value[key], isArray ? label + '[' + key + ']' : label + '.' + key, found, seen)
   }
+  seen.delete(value) // 递归后弹出：按路径判环（log.js scrub 同款），共享子对象不是循环引用
 }
 
 /**

@@ -51,8 +51,8 @@
 // 路径（先停 daemon 再动 state.json）**——运行中手改会被写回复活（Task 5 parked），
 // 不能让操作者白忙。输出里零 secret、零 key 材料、零响应体回显。
 // 为什么实现放 rpc.js 而不是这里：控制面的协议形状（rpc.json 字段、header、URL、预算）
-// server 与 client 必须共享同一份定义；且 CLI 启动模块图的体积经实测会挤占同工程兄弟
-// 测试文件的真实 IO 窗口（回退实验见 task-10-report.md），status 只在被调用时才现取。
+// server 与 client 必须共享同一份定义；status 只在被调用时才现取（延迟加载，其动机
+// 的成文与退役经过见下方 import 区的 R36 注记）。
 //
 // —— 可注入面（测试零真网零 spawn 的代价来源）——
 // load/acquireLock/createStore/createHost/createWatcher/onSignal/homedir/now/sleep/
@@ -72,12 +72,12 @@ import { createConfigWatcher } from './watch.js'
 import { runDoctor } from './doctor.js'
 import { createLogger } from './log.js'
 // rpc.js 是**延迟加载**（`await import('./rpc.js')` 只在 run 的控制面接线与 status 查询
-// 真被用到时才发生，且都短路于注入面）：控制面模块进不进 CLI 的启动模块图，在 CI 里
-// 实测会挤占同工程其它测试文件的真实 IO 窗口（Task 10 审查素材见 task-10-report.md）。
+// 真被用到时才发生，且都短路于注入面）：Task 10 当初的动机是一条回退实验——把 rpc.js 改回
+// 静态导入后，CLI 启动模块图变大，CI 里同工程其它测试文件的真实 IO 窗口被挤占、时序漂移。
 // 缺省件在两个使用点各自现取，注入面（测试）永远短路、零成本。
 // R36 已退役（Task 11）：watch.test.js 的 IO 排干窗从计数型改为墙钟 deadline 后，「模块图
-// 大小挤占兄弟测试时序」这条理由不再成立——本行延迟加载保留的是「模块边界卫生 + 注入短路
-// 零成本」这层真价值。历史回退实验见 task-10-report.md，勿再据旧注释援引测试时序。
+// 大小挤占兄弟测试时序」这条理由不再成立——本处延迟加载保留的是「模块边界卫生 + 注入短路
+// 零成本」这层真价值。勿再据旧注释援引测试时序（那条实验属历史，不构成现行约束）。
 
 export const EXIT_OK = 0
 export const EXIT_FAIL = 1

@@ -9,8 +9,9 @@
 //
 // —— Windows 下真正的防线是什么（brief 点名要写进文档的话）——
 // `fs.chmodSync(rpc.json, 0o600)` 是**尽力而为**：Windows 的 ACL 模型不吃 POSIX 位，
-// chmod 可能静默无效。保护**从不依赖文件权限**，它依赖两件事：①服务器只绑 127.0.0.1/::1
-// （回环之外没有任何路由可达，非回环 host 在入口就被 TypeError 拒掉）；②每个请求必须带
+// chmod 可能静默无效。保护**从不依赖文件权限**，它依赖两件事：①服务器只绑 127.0.0.1
+// （白名单就是 LOOPBACK_HOSTS 那一张写死的表——`::1` 不在表内，绑 v6 在入口就被
+// TypeError 拒掉，理由见下方 LOOPBACK_HOSTS 处的 v6 裁定注记）；②每个请求必须带
 // 与 rpc.json 一致的 secret（≥16 随机字节 hex）。status 的帮助文本里也原话说这条，
 // 别让任何人把「600」当护栏。
 //
@@ -142,7 +143,7 @@ export function readRpcFile({ dir, fileName = RPC_FILE_NAME } = {}) {
  * @param {{
  *   snapshot: () => object,                     // Task 7 host.snapshot（每请求实时取，brief Step 3）
  *   dir: string,                                // 数据目录（rpc.json 落点，与锁/state 同级）
- *   host?: string,                              // 只准 127.0.0.1/::1，其余 TypeError
+ *   host?: string,                              // 只准 127.0.0.1（LOOPBACK_HOSTS 白名单，::1 已裁掉），其余 TypeError
  *   secret?: string,                            // 缺省 randomHex(16)；注入也须 ≥32 hex
  *   readBodyLimit?: number,                     // 请求体字节上限（数而不存，超限 413）
  *   pid?: number, startedAt?: number,           // rpc.json 记账字段（测试可注入）

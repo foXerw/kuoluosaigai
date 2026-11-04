@@ -32,6 +32,11 @@
 // 保守结果（拒绝的代价是多一次重启；双跑的代价是房间事故），startedAt 比较只是提示、不构成
 // 同体证明，故不试图用它消歧。人类侧的出口是 Task 9 的 doctor：报出 holder 信息，人工确认
 // 对方进程确实不存在后删掉锁文件。
+// 另一条已知窗口（裁定 R22 点名合并前说明）：tryCreateExclusive 是 O_EXCL 建空文件再写内容
+// 两步（openSync 'wx' → writeFileSync），**建档与写入之间**对手若恰好读锁，读到的就是 ''——
+// 解析不出持有者，按「不可读=陈旧」判死并可能抢下接管。窗口亚微秒，且 spec 明文把不可读
+// 定为可接管，故这是**符合规定的行为**、R22 定案不改（硬化候选见 tests/lock.test.js 零字节
+// 用例注释）；该现行为已由零字节种子测试钉成显式契约。
 //
 // —— 可移植性（§8.5 承诺 Linux + Windows 双平台）——
 // 只用 node:path / node:fs；不假设 unix socket、flock、/proc 存在。Windows 上 EPERM 同样

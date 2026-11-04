@@ -125,6 +125,21 @@ describe('陈旧锁判定与接管（调用方据此打 WARN）', () => {
     res.release()
   })
 
+  it('R22 钉死契约：锁文件是零字节（O_EXCL 建档与写入之间的竞态窗形态）→ 判陈旧接管', () => {
+    // 裁定 R22 的合并前补件：lock.js 的 tryCreateExclusive 先 O_EXCL 建空文件、再写入内容，
+    // 中间窗口里对手读到的就是 ''——'' 解析不出持有者 →「不可读=陈旧」→ 接管成功。
+    // 这条把现行为钉成显式契约（坏 JSON/缺字段用例覆盖不到空串：'' 走的是 JSON.parse('')
+    // 抛错的独立分支），并给硬化改动（若 P2 改「''=在途、有界重试」）留下报警线。
+    const dir = freshDir()
+    fs.writeFileSync(lockPathOf(dir), '')
+    expect(fs.statSync(lockPathOf(dir)).size).toBe(0) // 前提成立：盘上真是零字节
+    const res = acquireLock({ dir, pid: PID_A, startedAt: 558, isAlive: aliveRivals })
+    expect(res.ok).toBe(true)
+    expect(res.tookOver).toBe(true)
+    expect(readLock(dir)).toEqual({ pid: PID_A, startedAt: 558 })
+    res.release()
+  })
+
   it('锁 JSON 合法但缺字段（pid 不是正整数）→ 同样判陈旧接管', () => {
     const dir = freshDir()
     fs.writeFileSync(lockPathOf(dir), JSON.stringify({ startedAt: 1 }))

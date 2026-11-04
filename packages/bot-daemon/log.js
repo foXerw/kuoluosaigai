@@ -16,9 +16,13 @@
 //   做全文替换——key 可以出现在 message 里，而不只出现在 apiKey 字段下。两把 key 在场必须
 //   都遮（「只遮第一条」是钉死要防的失败形态）。注册表有界（64 条，**LRU 逐出**：重注册=
 //   触摸后置，受害者只落从未再会的旧值——审查轮 1 Minor 1）：无常积累不许无限增长；操作者
-//   的 key 数量远小于上限，逐出只影响超旧值。**调用内顺序无关**（审查轮 1 Important）：
-//   注册与渲染在一行内交错，emit 对 buildLine 产物做终扫（knownSecrets 调用内单调不减，
-//   终扫 ⊇ 一切中间时刻），任何「文本先渲、注册后到」的 caller 形态都不得漏出全值。
+//   的 key 数量远小于上限，逐出只影响超旧值。**调用内顺序无关**（审查轮 1 Important，
+//   适用范围按裁定 R38 收窄）：注册与渲染在一行内交错，emit 对 buildLine 产物做终扫。
+//   超集论证（knownSecrets 调用内单调不减 → 终扫 ⊇ 一切中间时刻）**只在单次调用登记
+//   ≤64 个不同 secret 时成立**：register 的逐出循环是调用内唯一的删除路径，超出 64 时
+//   「早渲染的值恰好被同调用后来的注册逐出」理论上可漏。无现实调用方一次 emit 登记
+//   >64 个 key（操作者通常一两个）⇒ 接受为注释如实而非行为缺陷，勿再写回无条件单调的
+//   强形式。≤64 时任何「文本先渲、注册后到」的 caller 形态都不得漏出全值。
 //
 // —— sink 免疫（Task 1 parked 的 Critical-adjacent）——
 // deck.js:609 一带**裸调**宿主汇、runner 在 catch 内发射：日志器抛错 = 24/7 进程里的
@@ -43,7 +47,7 @@ import { summarizeThrown } from './config.js'
 
 const SECRET_KEY_RE = /key|token|secret/i // A1/A3：字段名命中即遮
 const MIN_KNOWN_SECRET_LEN = 8 // 防御性注册下限：短串当 key 会误伤正常文本
-const MAX_KNOWN_SECRETS = 64 // 已知值集合上限（FIFO 逐出）——无常积累不无限增长
+const MAX_KNOWN_SECRETS = 64 // 已知值集合上限（LRU 逐出：register 触摸=重插到队尾，见下）——无常积累不无限增长
 const MAX_DEPTH = 6 // 嵌套封顶：防超深结构的递归爆栈绕过 try（RangeError 也能被吞，但别赌）
 
 function maskOf(v) {
@@ -60,7 +64,7 @@ function maskOf(v) {
  * @returns {{ info: Function, warn: Function, error: Function, event: Function, knownSecretCount: () => number }}
  */
 export function createLogger({ write, now = Date.now, redact = null } = {}) {
-  const knownSecrets = new Set() // 已知敏感值原文 → 掩码（Set 迭代即插入序 = FIFO）
+  const knownSecrets = new Set() // 已知敏感值原文 → 掩码（Set 迭代即插入序；register 对在场值先删后加=触摸重排到队尾 ⇒ 逐出的是最久未再会的旧值，LRU）
   const sink = typeof write === 'function' ? write : (s) => process.stdout.write(s)
 
   function register(v) {
@@ -267,8 +271,12 @@ export function createLogger({ write, now = Date.now, redact = null } = {}) {
   // 审查轮 1 Important：渲染必须晚于**当次调用**的全部注册。buildLine 里注册与渲染交错
   // （msg/botId/kind 先渲、fields 循环后注册；同对象里 note 排在 apiKey 前；嵌套注册位更晚），
   // 单靠 pre-pass 要穷举一切注册位、未来新增注册点会静默重开洞。改为对已建 line 做终扫：
-  // knownSecrets 在调用内单调不减 → 终扫看到的集合 ⊇ 任何中间时刻 → 任意 caller 形态、任意
-  // 交错次序都顺序无关。line 已由 scrub 规约为无 getter、无循环、深度封顶的纯树，终扫是全函数
+  // 单次调用登记 ≤64 个不同 secret 时，knownSecrets 在调用内单调不减 → 终扫看到的集合 ⊇
+  // 任何中间时刻 → 任意 caller 形态、任意交错次序都顺序无关。**这个 ≤64 限定是裁定 R38**：
+  // register 的逐出分支（>64 时 while 删头）是调用内真实存在的删除路径，「无条件单调」是
+  // 过度声明；超出 64 时同调用内「早渲染的值被后到的注册挤逐」理论上可漏，无现实调用方
+  // 一次 emit 登记 >64 个 key（操作者通常一两个）——接受为注释如实，勿再写回强形式。
+  // line 已由 scrub 规约为无 getter、无循环、深度封顶的纯树，终扫是全函数
   // 不会抛；对已遮文本重跑 replaceKnown 是无操作或再遮——只会更安全。
   function scrubDeep(value) {
     if (typeof value === 'string') return replaceKnown(value)

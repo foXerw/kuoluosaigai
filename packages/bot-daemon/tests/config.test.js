@@ -176,6 +176,35 @@ describe('validateConfig：纯数据红线与字段校验', () => {
     expect(r.errors.some((e) => e.startsWith('bots') && e.includes('MAX_BOTS'))).toBe(true)
   })
 
+  it('共享子对象不是循环引用：同一对象字面量被两处合法引用 → 纯度扫描放行、不压制字段错误', () => {
+    // 终审 1 号：seen 只进不出时，一处 const qh 被两处引用会被误报「循环引用」，
+    // 短路还会吞掉其余一切字段错误——合法纯数据配置死于误诊。兄弟算法 log.js 的 scrub
+    // 按路径判环（递归后弹出 seen），此处同构修复。
+    const qh = { from: '01:30', to: '08:00' }
+    const raw = minimalRaw()
+    raw.limits = { quietHours: qh }
+    raw.bots = [{ id: 'lixiao', name: '小李', persona: 'p', room: 'nebula', rawPrompt: qh }] // 第二处引用同一对象
+    const r = validateConfig(raw)
+    expect(r.errors.filter((e) => e.includes('循环引用'))).toEqual([]) // 纯度扫描不得误报
+    expect(r.errors.some((e) => e.startsWith('bots[0].rawPrompt') && e.includes('必须为字符串'))).toBe(true) // 短路不得压制字段错误
+  })
+
+  it('真循环引用仍被拒：bots[0].self 自环 → errors 含「循环引用」', () => {
+    const raw = minimalRaw()
+    raw.bots[0].self = raw.bots[0]
+    const r = validateConfig(raw)
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.includes('循环引用'))).toBe(true)
+  })
+
+  it('真循环引用仍被拒：limits.backRef 指回 root 互环 → errors 含「循环引用」', () => {
+    const raw = minimalRaw()
+    raw.limits = { backRef: raw }
+    const r = validateConfig(raw)
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.includes('循环引用'))).toBe(true)
+  })
+
   it('errors[] 每条以字段路径开头（doctor 可直接打印）', () => {
     const raw = { name: 5, provider: 'nope', bots: [], limits: { globalHourlyMessages: -1 } }
     const r = validateConfig(raw)

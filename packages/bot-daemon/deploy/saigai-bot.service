@@ -53,8 +53,11 @@ ReadWritePaths=/var/lib/saigai-bot
 Environment=HOME=/var/lib/saigai-bot
 
 # —— provider key：绝不写进配置文件明文 ——
-# 配置里只写 `apiKey: process.env.KUO_LLM_KEY`（watcher 每轮真重导入，env 每次重载
-# 重读，见 watch.js 文件头）；key 本身从环境来，两条路任选其一：
+# 配置里只写 `apiKey: process.env.KUO_LLM_KEY`：热重载的每轮真重导入会**重新求值这个
+# 表达式**，但 process.env 的值在本进程 exec 时刻就已冻结——systemd 只在服务启动时读
+# EnvironmentFile，运行中改 env 文件不会换掉活进程里的 key。**换 key 必须
+# `systemctl restart saigai-bot`**（完整语义见同目录 README.md §3）。key 本身从环境来，
+# 两条路任选其一：
 #   (a) 推荐：/etc/saigai-bot/saigai-bot.env 里一行 KUO_LLM_KEY=sk-…（root:600）。
 #       下面 EnvironmentFile 的 `-` 前缀 = 文件不存在不报错（本地开发不拦启动）。
 #   (b) 图省事：取消下一行注释填真 key——代价是 key 进 unit 文件本体和
