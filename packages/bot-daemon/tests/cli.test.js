@@ -1,8 +1,11 @@
 // @vitest-environment node
-// Task 9：CLI 组装测试。优先单测注入依赖的 main(argv)（brief 明示），真组装只上
-// --once 一条（假 runner、假 WS 构造即抛、tmpdir 态目录），spawn 冒烟只留一条且带硬超时。
-// 钉死：启动六步顺序、R21 句柄式 release（无 releaseLock）、holder 两文案 + 双双退 3 非零
-// （A5 不静默）、退出码 0/1/2/3、关停顺序 watcher→host→lock、--once 零残留句柄、
+// Task 9：CLI 组装测试（Task 10 追加 status 子命令与 run 的控制面接线）。优先单测注入依赖的
+// main(argv)（brief 明示），真组装走 --once 一条 + status 两条真回环（rpc.js 起的 127.0.0.1:0
+// 服务，finally 必 close），spawn 冒烟只留一条且带硬超时。
+// 钉死：启动六步顺序（boot 后 control.start 再 watcher）、R21 句柄式 release（无 releaseLock）、
+// holder 两文案 + 双双退 3 非零（A5 不静默）、退出码 0/1/2/3/4、关停顺序
+// watcher.stop→control.close→host.shutdown→lock.release、--once 零残留句柄（且不建控制面）、
+// status 三态文案各异（missing/stale/401）+ 粘滞 restartRequired 置顶 + 数据年龄 + 孤儿暴露（Q12/R28/R31）、
 // Task 8 concern#4 的接线层短路、§8.2 help 文本不提 pair/revoke、A1 key 不落输出。
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { spawn } from 'node:child_process'
@@ -14,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 
 import { validateConfig, ConfigLoadError, loadConfig } from '../config.js'
 import { createConfigWatcher } from '../watch.js'
+import { startControlServer } from '../rpc.js'
 import { main } from '../cli.js'
 
 const SECRET = 'sk-SUPERSECRET-do-not-leak-9f3a'
@@ -159,6 +163,22 @@ function ctx(over) {
         stop: () => order.push('watcher.stop'),
       }
     },
+    startControlServer:
+      x.startControlServer ||
+      (async (o) => {
+        order.push('control.start')
+        calls.controlOpts = o
+        return {
+          port: 41517,
+          rpcPath: path.join(o.dir, 'rpc.json'),
+          close: () => {
+            order.push('control.close')
+            if (x.controlCloseErr) throw x.controlCloseErr
+            return Promise.resolve()
+          },
+        }
+      }),
+    readRpcFile: x.readRpcFile || (() => ({ ok: false, why: 'missing', path: '/virtual/rpc.json' })),
     homedir: () => tmpRoot,
     now: () => 1730000000000,
     onSignal: (name, cb) => {
@@ -190,6 +210,7 @@ it('未知子命令：打印用法退 2；§8.2 红线——help 不提 pair/rev
   expect(joined).toContain('saigai-bot run')
   expect(joined).toContain('validate')
   expect(joined).toContain('doctor')
+  expect(joined).toContain('saigai-bot status')
   expect(joined).not.toContain('pair')
   expect(joined).not.toContain('revoke')
 })
@@ -277,13 +298,14 @@ it('run 接管陈旧锁 → WARN 留痕（§7.4）', async () => {
 
 // —— run --once：六步顺序与干净退出 ——
 
-it('run --once：boot → converge → host.shutdown → lock.release，退 0，watcher 完全不建', async () => {
+it('run --once：boot → converge → host.shutdown → lock.release，退 0，watcher 与控制面都不建（不留任何句柄）', async () => {
   const c = ctx({})
   const code = await main(['run', '--once', '--data-dir', '/tmp/whatever'], c.deps)
   expect(code).toBe(0)
   expect(c.order).toEqual(['acquireLock', 'createStore', 'createHost', 'host.boot', 'host.converge', 'host.shutdown', 'lock.release'])
   expect(c.order).not.toContain('createWatcher')
   expect(c.order).not.toContain('watcher.start')
+  expect(c.order).not.toContain('control.start') // Task 10：--once 不建控制面（「零残留句柄」的字面承诺）
 })
 
 it('run --once 收敛抛错 → 非零且释放锁、关停 host（失败路径也不留锁）', async () => {
@@ -304,14 +326,16 @@ it('run boot 抛错 → 1，锁照样释放', async () => {
 
 // —— run 常驻：信号关停顺序与句柄纪律 ——
 
-it('run 常驻：SIGINT → watcher.stop → host.shutdown → lock.release（钉死顺序），监听器随退出摘除', async () => {
+it('run 常驻：SIGINT → watcher.stop → control.close → host.shutdown → lock.release（钉死相对序），监听器随退出摘除', async () => {
   const c = ctx({})
   const p = main(['run', '--data-dir', '/tmp/whatever'], c.deps)
   await until(() => c.signals.SIGINT && c.signals.SIGTERM)
-  expect(c.order).toEqual(['acquireLock', 'createStore', 'createHost', 'host.boot', 'createWatcher', 'watcher.start'])
+  expect(c.order).toEqual(['acquireLock', 'createStore', 'createHost', 'host.boot', 'control.start', 'createWatcher', 'watcher.start'])
+  // Task 10（Q12）：控制面在 boot 成功之后、watcher 之前起——快照读的是已就位的 host；
+  // control.close 插在 watcher.stop 与 host.shutdown 之间——先关「新读数的门」，再拆店。
   c.signals.SIGINT()
   expect(await p).toBe(0)
-  expect(c.order.slice(6)).toEqual(['watcher.stop', 'host.shutdown', 'lock.release'])
+  expect(c.order.slice(7)).toEqual(['watcher.stop', 'control.close', 'host.shutdown', 'lock.release'])
   expect(c.signals.SIGINT).toBeUndefined()
   expect(c.signals.SIGTERM).toBeUndefined()
 })
@@ -325,6 +349,46 @@ it('SIGTERM 连击两次也只关停一次（幂等，release 不双跑）', asy
   term()
   expect(await p).toBe(0)
   expect(c.order.filter((o) => o === 'lock.release').length).toBe(1)
+  expect(c.order.filter((o) => o === 'control.close').length).toBe(1) // 控制面 close 同样只跑一次
+})
+
+// —— Task 10：run 的控制面接线（Q12）——
+
+it('run 控制面接线：snapshot 回调真读 host.snapshot；数据目录传的是 --data-dir', async () => {
+  const c = ctx({})
+  const p = main(['run', '--data-dir', '/tmp/whatever'], c.deps)
+  await until(() => c.calls.controlOpts)
+  expect(typeof c.calls.controlOpts.snapshot).toBe('function')
+  expect(c.calls.controlOpts.snapshot()).toEqual({ meta: {}, bots: [] }) // 假 host 的 fixture 原样透传
+  expect(c.calls.controlOpts.dir).toBe('/tmp/whatever')
+  c.signals.SIGINT()
+  await p
+})
+
+it('控制服务起不来 → FAIL 大声但 daemon 照跑、SIGINT 关停仍退 0（观测面炸不拖垮 bot 面，A5 不静默）', async () => {
+  const c = ctx({
+    startControlServer: async () => {
+      throw new Error('rpc.json 写不进去：EACCES')
+    },
+  })
+  const p = main(['run', '--data-dir', '/tmp/whatever'], c.deps)
+  await until(() => c.signals.SIGINT && c.signals.SIGTERM)
+  expect(c.errs.join('\n')).toContain('控制服务未能启动')
+  expect(c.errs.join('\n')).toContain('EACCES')
+  expect(c.order).toContain('watcher.start') // bot 面没被观测面拖死
+  c.signals.SIGINT()
+  expect(await p).toBe(0)
+  expect(c.order).not.toContain('control.close') // 没起起来就没有可关的
+})
+
+it('control.close 炸 → R34 退 4，后续步骤照跑（关停步骤失败不许谎报干净停止）', async () => {
+  const c = ctx({ controlCloseErr: new Error('close 卡进内部异常') })
+  const p = main(['run', '--data-dir', '/tmp/whatever'], c.deps)
+  await until(() => c.signals.SIGINT)
+  c.signals.SIGINT()
+  expect(await p).toBe(4)
+  expect(joinedOf(c)).toContain('关停步骤失败')
+  expect(c.order).toContain('lock.release') // 一步炸不连累后两步
 })
 
 // —— Task 8 concern #4：接线层短路启动期空 diff converge ——
@@ -639,6 +703,211 @@ it('R34 --once：converge 好而关停步骤炸 → 4；converge 已炸（1）�
     throw new Error('dispose 也炸')
   }
   expect(await main(['run', '--once', '--data-dir', '/tmp/whatever'], b.deps)).toBe(1)
+})
+
+// —— Task 10：status 子命令（Q12）——
+
+const RPC_OK = { ok: true, path: '/virtual/rpc.json', info: { port: 41517, secret: 'ab'.repeat(16), pid: 4242, startedAt: 1730000000000 } }
+
+function fakeRes(status, body) {
+  return { status, text: async () => body }
+}
+
+it('status 用法：带位置参数或 --config → 2；help 文本含 status 与「Windows chmod 尽力而为、防线是回环+secret」', async () => {
+  const a = ctx({})
+  expect(await main(['status', '多余参数'], a.deps)).toBe(2)
+  const b = ctx({})
+  expect(await main(['status', '--config', '/x/y.js'], b.deps)).toBe(2)
+  const h = ctx({})
+  expect(await main(['help'], h.deps)).toBe(0)
+  const usage = h.out.join('\n')
+  expect(usage).toContain('saigai-bot status')
+  expect(usage).toContain('Windows')
+  expect(usage).toContain('尽力而为')
+  expect(usage).toContain('127.0.0.1')
+})
+
+it('status 三态文案各自独立可辨（missing / stale 不可达 / 401 secret）——全退 1，绝不混写', async () => {
+  const miss = ctx({}) // ctx 默认 readRpcFile → missing
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], miss.deps)).toBe(1)
+  const missLine = miss.errs.join('\n')
+  expect(missLine).toContain('未在运行')
+  expect(missLine).not.toContain('陈旧')
+
+  const stale = ctx({})
+  const staleDeps = Object.assign({}, stale.deps, {
+    readRpcFile: () => ({ ok: false, why: 'malformed', path: '/tmp/whatever/rpc.json' }),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], staleDeps)).toBe(1)
+  const staleLine = stale.errs.join('\n')
+  expect(staleLine).toContain('陈旧')
+  expect(staleLine).not.toContain('未在运行')
+
+  const refused = ctx({})
+  const refusedDeps = Object.assign({}, refused.deps, {
+    readRpcFile: () => RPC_OK,
+    fetchImpl: async () => {
+      const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:41517'), { code: 'ECONNREFUSED' })
+      throw new TypeError('fetch failed', { cause })
+    },
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], refusedDeps)).toBe(1)
+  expect(refused.errs.join('\n')).toContain('陈旧')
+  expect(refused.errs.join('\n')).toContain('ECONNREFUSED')
+
+  const denied = ctx({})
+  const deniedDeps = Object.assign({}, denied.deps, {
+    readRpcFile: () => RPC_OK,
+    fetchImpl: async () => fakeRes(401, '{"error":"unauthorized"}'),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], deniedDeps)).toBe(1)
+  expect(denied.errs.join('\n')).toContain('401')
+  expect(denied.errs.join('\n')).toContain('secret')
+
+  const unreadable = ctx({})
+  const unreadableDeps = Object.assign({}, unreadable.deps, {
+    readRpcFile: () => ({ ok: false, why: 'unreadable', path: '/tmp/whatever/rpc.json' }),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], unreadableDeps)).toBe(1)
+  expect(unreadable.errs.join('\n')).toContain('读不出')
+})
+
+it('status 超时路径有界：fetchImpl 尊重 AbortSignal → 到点自断、退 1 报「超时」（陈旧门牌不许挂死 CLI）', async () => {
+  const c = ctx({})
+  const deps = Object.assign({}, c.deps, {
+    readRpcFile: () => RPC_OK,
+    statusTimeoutMs: 20,
+    fetchImpl: (url, init) =>
+      new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
+        })
+      }),
+  })
+  const t0 = Date.now()
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], deps)).toBe(1)
+  expect(c.errs.join('\n')).toContain('超时')
+  expect(Date.now() - t0).toBeLessThan(2000) // 有界：20ms 就该收口，不许等默认 5s
+})
+
+it('status 渲染面：401 体不带诊断信息时也不印响应体（A3 不回显）；非 200/坏 JSON 各有独立文案', async () => {
+  const notFound = ctx({})
+  const nfDeps = Object.assign({}, notFound.deps, {
+    readRpcFile: () => RPC_OK,
+    fetchImpl: async () => fakeRes(404, '{"error":"not-found"}'),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], nfDeps)).toBe(1)
+  expect(notFound.errs.join('\n')).toContain('404')
+  expect(notFound.errs.join('\n')).not.toContain('not-found') // 不回显响应体
+
+  const garbage = ctx({})
+  const gDeps = Object.assign({}, garbage.deps, {
+    readRpcFile: () => RPC_OK,
+    fetchImpl: async () => fakeRes(200, '{不是 JSON'),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], gDeps)).toBe(1)
+  expect(garbage.errs.join('\n')).toContain('不是合法 JSON')
+  expect(garbage.errs.join('\n')).not.toContain('不是 JSON') // 原始体不回显（消息里只说形状问题）
+
+  const weird = ctx({})
+  const wDeps = Object.assign({}, weird.deps, {
+    readRpcFile: () => RPC_OK,
+    fetchImpl: async () => fakeRes(200, JSON.stringify({ hello: 'world' })),
+  })
+  expect(await main(['status', '--data-dir', '/tmp/whatever'], wDeps)).toBe(1)
+  expect(weird.errs.join('\n')).toContain('形状')
+})
+
+it('status 真回环端到端（rpc.js 起真服务）：数据年龄、粘滞 restartRequired 置顶、孤儿 id+数量+正确清除路径、输出零 secret 零 apiKey', async () => {
+  const dir = freshDir()
+  const base = 1730000000000
+  const snap = {
+    meta: {
+      deviceId: null,
+      name: 'lab-vm',
+      uptimeMs: 123000,
+      globalHourCount: null,
+      restartRequired: true, // R26/R28/R31：粘滞位「不可能看漏」的验收面
+      generatedAt: base,
+    },
+    bots: [],
+  }
+  const handle = await startControlServer({ dir, snapshot: () => snap, pid: 4242, startedAt: base })
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'state.json'),
+      JSON.stringify({
+        version: 1,
+        providers: [],
+        bots: [],
+        lifetime: {},
+        orphans: { ghosta: { nick: 'ANON-AAAA', lifetime: { promptTokens: 1, completionTokens: 2 } }, ghostb: { nick: null, lifetime: null } },
+      }),
+    )
+    const out = []
+    const errs = []
+    const code = await main(['status', '--data-dir', dir], {
+      print: (l) => out.push(String(l)),
+      printErr: (l) => errs.push(String(l)),
+      now: () => base + 2000,
+    })
+    expect(code).toBe(0)
+    expect(errs.join('\n')).toBe('')
+    const joined = out.join('\n')
+    // Q12 新鲜度口径：报「N 秒前」，不宣称与实时相等
+    expect(joined).toContain('2 秒前')
+    expect(joined).toContain('≤5')
+    // R31：置顶显眼——前 3 行内必须出现（不许埋在表格底下）
+    expect(out.slice(0, 3).join('\n')).toContain('restartRequired')
+    expect(joined).toContain('重启')
+    // R28/R30 形状如实渲染：deviceId null 直说、globalHourCount null 说「未配置」而非 0
+    expect(joined).toContain('null')
+    expect(joined).toContain('未配置')
+    // Task 5 parked：孤儿只读暴露 + 唯一正确清除路径（先停 daemon），不许让人手改活文件
+    expect(joined).toContain('2 个')
+    expect(joined).toContain('ghosta')
+    expect(joined).toContain('ghostb')
+    expect(joined).toContain('先停')
+    expect(joined).toContain('复活')
+    // A1/A7：secret 与 key 材料不进输出
+    expect(joined).not.toContain(handle.secret)
+    expect(joined).not.toContain('apiKey')
+  } finally {
+    await handle.close()
+  }
+})
+
+it('status 真回环·401 实弹：rpc.json 的 secret 与在场 daemon 不一致 → 退 1，文案点破 secret 不匹配（不混「未在运行」）', async () => {
+  const dir = freshDir()
+  const base = 1730000000000
+  const snap = {
+    meta: { deviceId: null, name: 'lab-vm', uptimeMs: 1000, globalHourCount: 7, restartRequired: false, generatedAt: base },
+    bots: [],
+  }
+  const handle = await startControlServer({ dir, snapshot: () => snap })
+  try {
+    const doc = JSON.parse(fs.readFileSync(path.join(dir, 'rpc.json'), 'utf8'))
+    doc.secret = 'cd'.repeat(16) // 模拟「读着旧门牌、daemon 已换新 secret」
+    fs.writeFileSync(path.join(dir, 'rpc.json'), JSON.stringify(doc) + '\n')
+    const out = []
+    const errs = []
+    const code = await main(['status', '--data-dir', dir], {
+      print: (l) => out.push(String(l)),
+      printErr: (l) => errs.push(String(l)),
+      now: () => base + 1000,
+    })
+    expect(code).toBe(1)
+    const line = errs.join('\n')
+    expect(line).toContain('401')
+    expect(line).toContain('secret')
+    expect(line).not.toContain('未在运行')
+    expect(out.join('\n')).not.toContain(doc.secret)
+    expect(out.join('\n')).not.toContain(handle.secret)
+  } finally {
+    await handle.close()
+    // close 的账本对账会认不下被改写过的门牌 → 手动收尾，测试目录仍被 afterAll 兜底
+    fs.rmSync(path.join(dir, 'rpc.json'), { force: true })
+  }
 })
 
 function joinedOf(c) {
