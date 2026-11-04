@@ -96,6 +96,12 @@
         </form>
       </section>
 
+      <section class="deck__sec">
+        <h3 class="deck__sec-title">&gt; EXPORT</h3>
+        <button class="deck__export" type="button" @click="exportConfig">⇩ 导出 saigai-bot.config.js</button>
+        <p class="deck__note">&gt; 仅在本机内存里生成文件并触发下载，全程无任何网络请求；API key 写成 process.env.KUO_LLM_KEY 占位，明文 key 不进文件（A1/§8.1.1）。</p>
+      </section>
+
       <p class="deck__foot">&gt; badge（BOT·人格名）公开可被仿造 · 标签页后台时定时器节流，回复迟到属预期（B14）。[ESC] 关面板，bot 照跑。</p>
     </div>
   </div>
@@ -111,6 +117,10 @@
 // 全部交给 store.refreshLeases()——组件不复刻租约解析器/tabId 排除/新鲜度计算。
 import BotCard from './BotCard.vue'
 import { MAX_BOTS, PROVIDER_PRESETS } from '../bots/store'
+// R18(2)：新建表单的拟人参数默认取 core 权威常量——写死字面量会让 core 默认日后改动
+// 传不到 UI 新建的 bot（表单初值作为显式值流进 addBot，绕开 normalizeCfg 缺省）。
+import { DEFAULT_CHATTINESS, DEFAULT_TEMPERATURE } from 'kuoluosaigai-bot-core'
+import { buildConfigFile } from '../bots/export'
 import { LEASE_KEY } from '../bots/lease'
 import { PUBLIC_ROOM_IDS } from '../theme/channels'
 
@@ -131,10 +141,10 @@ export default {
       form: {
         name: '',
         persona: '',
-        chattiness: 50,
+        chattiness: DEFAULT_CHATTINESS, // R18(2)：core 权威常量，杜绝 UI 侧第二份默认
         providerId: null,
         model: '',
-        temperature: 0.9, // spec §7 钉死默认（终审 M1）
+        temperature: DEFAULT_TEMPERATURE, // spec §7 钉死默认（终审 M1）——R18(2) 同上收口 core
         roomId: this.initialRoomId || PUBLIC_ROOM_IDS[0] || '',
       },
       createError: '',
@@ -214,6 +224,22 @@ export default {
       this.createError = ''
       this.form.name = ''
       this.form.persona = ''
+    },
+    // Task 13 / §8.1.1 配置桥：deck → daemon 手写配置文件。硬约束「全程本地」——序列化
+    // 产物只进 Blob 再走 a.download 触发浏览器本地存盘，不碰 fetch/XHR/WebSocket。
+    // apiKey 由序列化器统一写 process.env.KUO_LLM_KEY 占位（A1），store 里的明文 key
+    // 在 buildConfigFile 层就没有导出面。
+    exportConfig() {
+      const text = buildConfigFile({ providers: this.store.providers, bots: this.store.bots })
+      const blob = new Blob([text], { type: 'text/javascript;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'saigai-bot.config.js'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
     },
   },
 }
@@ -336,7 +362,8 @@ export default {
   accent-color: var(--app-color, #39ff14);
 }
 .deck__create,
-.deck__prov-add {
+.deck__prov-add,
+.deck__export {
   align-self: flex-start;
   background: none;
   border: 1px solid var(--app-color, #39ff14);

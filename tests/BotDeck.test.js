@@ -1,12 +1,13 @@
 // Task 9 / spec §8.4 —— BotDeck 面板契约（brief Step 1 四条全落实）。
 // 真 createBotStore + deps.createRunner 桩；storage 用默认 jsdom localStorage——
 // otherTab 刷新路径 = 组件监听 'storage'(LEASE_KEY) 后轻查本机租约表（store 未暴露刷新方法）。
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import BotDeck from '../src/components/BotDeck.vue'
 import BotCard from '../src/components/BotCard.vue'
 import { createBotStore, MAX_BOTS, PROVIDER_PRESETS } from '../src/bots/store'
 import { LEASE_KEY } from '../src/bots/lease'
+import { DEFAULT_CHATTINESS, DEFAULT_TEMPERATURE } from 'kuoluosaigai-bot-core'
 
 function makeRunnerStub() {
   const byBot = new Map()
@@ -222,5 +223,87 @@ describe('initialRoomId prop（T10 落地房默认，向后兼容）', () => {
     const w2 = mount(BotDeck, { props: { store } })
     expect(w2.find('.deck__room-input').element.value).toBe('setsubun')
     w2.unmount()
+  })
+})
+
+describe('导出按钮（Task 13 / §8.1.1）', () => {
+  // jsdom 不实现 URL.createObjectURL / 不做 <a download> 导航——按钮路径的接缝在测试里
+  // 用桩接管：Blob 与 download 名在桩上取证，导航与 blob URL 一律不出门。
+  function stubDownloadSurface() {
+    const orig = {
+      create: URL.createObjectURL,
+      revoke: URL.revokeObjectURL,
+      click: HTMLAnchorElement.prototype.click,
+    }
+    const blobHolder = { blob: null }
+    const downloads = []
+    URL.createObjectURL = vi.fn((b) => {
+      blobHolder.blob = b
+      return 'blob:deck-mock'
+    })
+    URL.revokeObjectURL = vi.fn()
+    HTMLAnchorElement.prototype.click = vi.fn(function () {
+      downloads.push({ download: this.download, href: this.href })
+    })
+    return { blobHolder, downloads, restore: () => Object.assign(URL, { createObjectURL: orig.create, revokeObjectURL: orig.revoke }), restoreClick: () => { HTMLAnchorElement.prototype.click = orig.click } }
+  }
+
+  it('R18(2)：新建表单 chattiness/temperature 默认来自 core 权威常量（DEFAULT_CHATTINESS/DEFAULT_TEMPERATURE，不再是硬编码 50/0.9）', () => {
+    const { w } = setup()
+    expect(w.vm.form.chattiness).toBe(DEFAULT_CHATTINESS)
+    expect(w.vm.form.temperature).toBe(DEFAULT_TEMPERATURE)
+  })
+
+  it('按钮在场；点击 → 本地 Blob + a.download=saigai-bot.config.js，产物含 env 占位不含明文 key', async () => {
+    const { store, w } = setup()
+    store.addProvider({ name: 'P1', baseUrl: 'https://x.test', apiKey: 'sk-DECK-SECRET-777' })
+    store.addBot({ name: 'A', roomId: 'setsubun', providerId: store.providers[0].id, model: 'm-1' })
+    await w.vm.$nextTick()
+    const btn = w.find('.deck__export')
+    expect(btn.exists()).toBe(true)
+
+    const stub = stubDownloadSurface()
+    try {
+      await btn.trigger('click')
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+      expect(stub.blobHolder.blob).toBeInstanceOf(Blob)
+      expect(stub.downloads).toEqual([{ download: 'saigai-bot.config.js', href: 'blob:deck-mock' }])
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1)
+      const text = await stub.blobHolder.blob.text()
+      expect(text).toContain('export default {')
+      expect(text).toContain('process.env.KUO_LLM_KEY')
+      expect(text).not.toContain('sk-DECK-SECRET-777') // A1：deck store 里的明文 key 绝不进导出物
+    } finally {
+      stub.restore()
+      stub.restoreClick()
+    }
+  })
+
+  it('导出全程本地：点击一次 fetch/XHR.open/WebSocket/sendBeacon 都不许被碰到（§8.1.1 硬约束）', async () => {
+    const { store, w } = setup()
+    store.addProvider({ name: 'P1', baseUrl: 'https://x.test', apiKey: 'k' })
+    store.addBot({ name: 'A', roomId: 'setsubun', providerId: store.providers[0].id })
+    await w.vm.$nextTick()
+
+    const fetchSpy = vi.fn(() => {
+      throw new Error('导出不得走 fetch')
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const xhrOpen = vi.spyOn(XMLHttpRequest.prototype, 'open')
+    const wsSpy = typeof globalThis.WebSocket === 'function' ? vi.spyOn(globalThis, 'WebSocket') : null
+    const beaconSpy = typeof navigator.sendBeacon === 'function' ? vi.spyOn(navigator, 'sendBeacon') : null
+    const stub = stubDownloadSurface()
+    try {
+      await w.find('.deck__export').trigger('click')
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(xhrOpen).not.toHaveBeenCalled()
+      if (wsSpy) expect(wsSpy).not.toHaveBeenCalled()
+      if (beaconSpy) expect(beaconSpy).not.toHaveBeenCalled()
+    } finally {
+      stub.restore()
+      stub.restoreClick()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
   })
 })
