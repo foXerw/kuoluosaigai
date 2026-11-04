@@ -440,7 +440,8 @@ it('spawn 冒烟：bin validate 合法配置 → 子进程退 0 且 stdout 含 O
       child.kill('SIGKILL')
       reject(new Error('spawn 冒烟超时（20s）'))
     }, 20000)
-    child.on('exit', (exitCode) => {
+    // close（非 exit）：等 stdio 管道排空再断言 outStr——exit 后 stdout data 理论上可迟到（轮 2 消抖）
+    child.on('close', (exitCode) => {
       clearTimeout(timer)
       resolve({ exitCode, outStr })
     })
@@ -496,7 +497,9 @@ it('spawn blackhole：黑洞 WS 端点下 doctor 超时判 FAIL 后必须自行�
         child.kill('SIGKILL')
         reject(new Error('spawn blackhole：doctor 未自行退出（Important 1 悬挂复现）'))
       }, HARNESS_MS)
-      child.on('exit', (exitCode) => {
+      // close（非 exit）：stdio 排空后才断言 outStr；25s killer 仍是超时唯一权威——
+      // 悬挂形态=「FAIL 已印、exitCode 已定、close 不来」，killer 到点必红（轮 1 实测如此）。
+      child.on('close', (exitCode) => {
         clearTimeout(killer)
         resolve({ exitCode, outStr })
       })
@@ -514,28 +517,46 @@ it('spawn blackhole：黑洞 WS 端点下 doctor 超时判 FAIL 后必须自行�
   }
 }, 40000)
 
-// —— 审查轮 1 · R33：ConfigLoadError.message 在构造点净化，假 key 三处打印面全不落 ——
+// —— 审查轮 1 · R33（轮 2 改造）：ConfigLoadError.message 在构造点净化，三处打印面各成独立用例 ——
+// 轮 1 的空转自纠：SECRET 全串（31 字符）**从不**出现在原始 message 里——V8 的输入切片窗口
+// 只有 ~10 字符+省略号。故 `not.toContain(SECRET)` 在净化器回归时也能绿=真空守卫。
+// 针（needle）改为真实泄漏形态：窗口前缀 + 切片措辞；每面单独成 it，净化器一旦被拆掉，
+// **三面各自变红**（轮 2 用回退实验逐面验证，见 task-9-report.md Fix Round 2）。
 
-it('R33 求值期抛带 key：run stderr / doctor 输出 / watcher warn 三处都无 key，原文完整留在 cause', async () => {
+const LEAK_WINDOW = SECRET.slice(0, 10) // 'sk-SUPERSE'——V8 实际嵌进原始 message 的窗口内容
+const RAW_PHRASE = 'Unexpected token' // 切片形态的措辞头，净化层必须剥掉
+
+function leakyCfgFile() {
   const dir = freshDir()
   const cfgPath = path.join(dir, 'leaky.config.js')
-  // 审查探针同款场景：求值期 JSON.parse 抛错，V8 把输入切片（含 key）嵌进 message。
+  // 审查探针同款场景：求值期 JSON.parse 抛错，V8 把输入切片（含 key 头部）嵌进 message。
   // 实测钉形（Node 24）：输入以**非 JSON 开头**才走「Unexpected token + 输入切片」形态——
   // 合法前缀（如 "1"+key）走 position 形态、本身不含切片；净化器两头都必须成立。
   fs.writeFileSync(cfgPath, 'export default JSON.parse("' + SECRET + '")\n')
+  return { dir, cfgPath }
+}
 
-  // ①validate 面（真 loadConfig，不注入）
+it('R33·①validate/run stderr 面：无切片窗口前缀、无切片措辞（净化器回归可独立变红）', async () => {
+  const { cfgPath } = leakyCfgFile()
   const v = ctx({ load: (p) => loadConfig(p) })
   expect(await main(['validate', cfgPath], v.deps)).toBe(1)
-  expect(joinedOf(v)).not.toContain(SECRET)
+  expect(joinedOf(v)).not.toContain(LEAK_WINDOW)
+  expect(joinedOf(v)).not.toContain(RAW_PHRASE)
+  expect(joinedOf(v)).not.toContain(SECRET) // 全串留作未来窗口变宽形态的腰带
   expect(joinedOf(v)).toContain('unparsable') // 净化不能吃掉定位信息的全部残值：kind 仍在场
+})
 
-  // ②doctor 面（真 loadConfig）
+it('R33·②doctor 输出面：同上（配置坏时依赖项走「未实测」，零真实网络）', async () => {
+  const { dir, cfgPath } = leakyCfgFile()
   const d = ctx({ load: (p) => loadConfig(p) })
   expect(await main(['doctor', '--config', cfgPath, '--data-dir', dir], d.deps)).toBe(1)
+  expect(joinedOf(d)).not.toContain(LEAK_WINDOW)
+  expect(joinedOf(d)).not.toContain(RAW_PHRASE)
   expect(joinedOf(d)).not.toContain(SECRET)
+})
 
-  // ③watcher 面（watch.js:175 打印点**不动**，由上游构造点净化——R33 裁定）
+it('R33·③watcher warn 面：同上（watch.js:175 打印点**不动**，由上游构造点净化——R33 裁定）', async () => {
+  const { cfgPath } = leakyCfgFile()
   const warns = []
   const watcher = createConfigWatcher({
     load: () => loadConfig(cfgPath),
@@ -553,24 +574,41 @@ it('R33 求值期抛带 key：run stderr / doctor 输出 / watcher warn 三处�
   } finally {
     watcher.stop()
   }
-  expect(warns.join('\n')).toContain('unparsable')
-  expect(warns.join('\n')).not.toContain(SECRET)
+  const joined = warns.join('\n')
+  expect(joined).toContain('unparsable')
+  expect(joined).not.toContain(LEAK_WINDOW)
+  expect(joined).not.toContain(RAW_PHRASE)
+  expect(joined).not.toContain(SECRET)
+})
 
-  // ④构造点直证：message 净化、cause 原文完整（诊断力不丢，R33 的「留 .cause」条款）
+it('R33·④构造点直证：message 净化且保留行位残值，cause 原文逐字（R33「留 .cause」条款）', async () => {
+  const { cfgPath } = leakyCfgFile()
   const err = await loadConfig(cfgPath).then(
     () => null,
     (e) => e,
   )
   expect(err).toBeInstanceOf(ConfigLoadError)
   expect(err.kind).toBe('unparsable')
+  expect(err.message).not.toContain(LEAK_WINDOW)
+  expect(err.message).not.toContain(RAW_PHRASE)
   expect(err.message).not.toContain(SECRET)
   expect(err.cause).toBeInstanceOf(Error)
-  // cause 保真=原文逐字（实测 V8 自己的切片窗口只带输入前 ~10 字符+省略号，故钉窗口内前缀
-  // 'sk-SUPERSE' 与被净化层剥掉的 'Unexpected token' 措辞——两头都证明「摘要归摘要、原文归 cause」）
   const causeMsg = String(err.cause.message)
-  expect(causeMsg).toContain('sk-SUPERSE')
-  expect(causeMsg).toContain('Unexpected token')
-  expect(err.message).not.toContain('Unexpected token')
+  expect(causeMsg).toContain(LEAK_WINDOW)
+  expect(causeMsg).toContain(RAW_PHRASE)
+
+  // position 形态（合法 JSON 前缀+后续垃圾）：净化后行位数字必须**仍在** message 里
+  // （Review Focus #1「指出行位」的残值条款——净化剥的是源文，不是坐标）。
+  const posDir = freshDir()
+  const posPath = path.join(posDir, 'pos.config.js')
+  fs.writeFileSync(posPath, 'export default JSON.parse("1' + SECRET + 'x")\n')
+  const posErr = await loadConfig(posPath).then(
+    () => null,
+    (e) => e,
+  )
+  expect(posErr).toBeInstanceOf(ConfigLoadError)
+  expect(posErr.message).toContain('position')
+  expect(posErr.message).not.toContain(SECRET)
 })
 
 // —— 审查轮 1 · R34：关停步骤炸 ≠ 干净停止，常驻路径退 4（--once 同为 4，converge 炸的 1 优先）——
