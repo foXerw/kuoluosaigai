@@ -14,8 +14,11 @@
 //   不取前缀）；非字符串敏感值（对象/数组）整体 [masked]，其中嵌的字符串叶子**防御性注册**
 //   进已知集。②已知 key 的**值**注册进集合，对一切自由文本（msg、其他字符串字段、字段名）
 //   做全文替换——key 可以出现在 message 里，而不只出现在 apiKey 字段下。两把 key 在场必须
-//   都遮（「只遮第一条」是钉死要防的失败形态）。注册表有界（64 条，FIFO 逐出）：无常积累
-//   不许无限增长；操作者的 key 数量远小于上限，逐出只影响超旧值。
+//   都遮（「只遮第一条」是钉死要防的失败形态）。注册表有界（64 条，**LRU 逐出**：重注册=
+//   触摸后置，受害者只落从未再会的旧值——审查轮 1 Minor 1）：无常积累不许无限增长；操作者
+//   的 key 数量远小于上限，逐出只影响超旧值。**调用内顺序无关**（审查轮 1 Important）：
+//   注册与渲染在一行内交错，emit 对 buildLine 产物做终扫（knownSecrets 调用内单调不减，
+//   终扫 ⊇ 一切中间时刻），任何「文本先渲、注册后到」的 caller 形态都不得漏出全值。
 //
 // —— sink 免疫（Task 1 parked 的 Critical-adjacent）——
 // deck.js:609 一带**裸调**宿主汇、runner 在 catch 内发射：日志器抛错 = 24/7 进程里的
@@ -63,6 +66,10 @@ export function createLogger({ write, now = Date.now, redact = null } = {}) {
   function register(v) {
     try {
       if (typeof v !== 'string' || v.length < MIN_KNOWN_SECRET_LEN) return
+      // LRU 触摸（审查轮 1 Minor 1）：Set.add 对在场值是 no-op——不先删再加，持续在场的热
+      // key 永远占着插入头部、被逐出殃及自身，一次性的过路值反而长驻。先删后加=重排到队尾，
+      // 逐出只落「自上次在场以来从未再会」的最旧值。
+      knownSecrets.delete(v)
       knownSecrets.add(v)
       while (knownSecrets.size > MAX_KNOWN_SECRETS) {
         knownSecrets.delete(knownSecrets.values().next().value)
@@ -72,12 +79,19 @@ export function createLogger({ write, now = Date.now, redact = null } = {}) {
     }
   }
 
-  // 自由文本脱敏：先已知值全文替换，再过可选 redact 钩子（钩子炸回退默认结果）。
-  function scrubText(s) {
+  // 已知值全文替换（与钩子分离：供 build 期与终扫各自调用，redact 钩子只在 build 期单次生效，
+  // 免得非幂等钩子被终扫跑第二遍）。
+  function replaceKnown(s) {
     let out = s
     for (const v of knownSecrets) {
       if (out.indexOf(v) !== -1) out = out.split(v).join(maskOf(v))
     }
+    return out
+  }
+
+  // 自由文本脱敏：先已知值全文替换，再过可选 redact 钩子（钩子炸回退默认结果）。
+  function scrubText(s) {
+    let out = replaceKnown(s)
     if (typeof redact === 'function') {
       try {
         const r = redact(out)
@@ -133,7 +147,7 @@ export function createLogger({ write, now = Date.now, redact = null } = {}) {
   function scrubError(err) {
     const out = { name: safeString(err.name || 'Error'), message: scrubText(safeString(err.message)) }
     try {
-      if (typeof err.code === 'string') out.code = err.code
+      if (typeof err.code === 'string') out.code = scrubText(err.code) // 审查轮 1 Minor 2：code 面不豁免
     } catch (e) {
       /* code 是炸的 getter：没有 code，照常出 */
     }
@@ -250,9 +264,30 @@ export function createLogger({ write, now = Date.now, redact = null } = {}) {
     return line
   }
 
+  // 审查轮 1 Important：渲染必须晚于**当次调用**的全部注册。buildLine 里注册与渲染交错
+  // （msg/botId/kind 先渲、fields 循环后注册；同对象里 note 排在 apiKey 前；嵌套注册位更晚），
+  // 单靠 pre-pass 要穷举一切注册位、未来新增注册点会静默重开洞。改为对已建 line 做终扫：
+  // knownSecrets 在调用内单调不减 → 终扫看到的集合 ⊇ 任何中间时刻 → 任意 caller 形态、任意
+  // 交错次序都顺序无关。line 已由 scrub 规约为无 getter、无循环、深度封顶的纯树，终扫是全函数
+  // 不会抛；对已遮文本重跑 replaceKnown 是无操作或再遮——只会更安全。
+  function scrubDeep(value) {
+    if (typeof value === 'string') return replaceKnown(value)
+    if (Array.isArray(value)) {
+      const out = []
+      for (const item of value) out.push(scrubDeep(item))
+      return out
+    }
+    if (value !== null && typeof value === 'object') {
+      const out = {}
+      for (const k of Object.keys(value)) out[replaceKnown(k)] = scrubDeep(value[k])
+      return out
+    }
+    return value
+  }
+
   function emit(level, msg, fields) {
     try {
-      const line = buildLine(level, msg, fields)
+      const line = scrubDeep(buildLine(level, msg, fields))
       let text
       try {
         text = JSON.stringify(line)

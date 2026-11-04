@@ -159,6 +159,52 @@ describe('Task 11：结构化 stdout 日志（§8.2）', () => {
     expect(lines[2].level).toBe('error')
   })
 
+  it('同调用内注册先于渲染（审查轮 1 Important）：key 与它的注册位同行时，先渲染的面也不留全值', () => {
+    const cap = capture()
+    const logger = createLogger({ write: cap.write, now: () => 1 })
+    logger.error('认证失败 ' + KEY_A, { apiKey: KEY_A }) // msg 在 fields 循环注册之前渲染
+    logger.info('note 先渲染', { note: KEY_B, apiKey: KEY_B }) // note 排在 apiKey 前
+    logger.warn('嵌套注册', { note: KEY_A, provider: { apiKey: KEY_A } }) // 注册位在嵌套对象里
+    const text = cap.all()
+    expect(text).not.toContain(KEY_A) // 红线：完整 key 不得出现在任何日志行
+    expect(text).not.toContain(KEY_B)
+    expect(text).not.toContain(KEY_A.slice(0, -4))
+    expect(text).not.toContain(KEY_B.slice(0, -4))
+    expect(cap.lines()[0].msg).toBe('认证失败 sk-****1111')
+    expect(cap.lines()[1].note).toBe('sk-****2222')
+    expect(cap.lines()[2].note).toBe('sk-****1111')
+  })
+
+  it('注册表 LRU（审查轮 1 Minor 1）：持续再会的热 key 不被逐出探针逮个正着，受害者只应是过路值', () => {
+    const cap = capture()
+    const logger = createLogger({ write: cap.write, now: () => 1 })
+    const hot = 'sk-HOTKEY-0000-0001'
+    // 64 轮：末轮过路值 c63 入表恰好逼出第一次逐出。FIFO 旧序里 hot 从未被触摸、恒在头部
+    // → 被逐的就是 hot；LRU 触摸下 hot 每轮后置，受害者只应是从未再见的 c0。探针紧跟在
+    // 末轮之后（旧序下 hot 此刻已掉册），把这个一回合窗口钉死。
+    for (let i = 0; i < 64; i += 1) {
+      logger.info('热在场', { apiKey: hot })
+      logger.info('过路', { apiKey: 'sk-CANARY-' + String(i).padStart(4, '0') + '-pass' })
+    }
+    expect(logger.knownSecretCount()).toBeLessThanOrEqual(64)
+    logger.warn('探针：' + hot)
+    expect(cap.lines()[128].msg).toBe('探针：sk-****0001')
+    const oldest = 'sk-CANARY-0000-pass' // LRU 下最先被逐的是它，不是 hot
+    logger.info('引用最老', { note: '旧 ' + oldest })
+    expect(cap.lines()[129].note).toBe('旧 ' + oldest) // 逐出语义如实：被逐值不再遮（不炸）
+  })
+
+  it('Error.code 面也过脱敏（审查轮 1 Minor 2）：注册过的 key 作 code 值不留原文', () => {
+    const cap = capture()
+    const logger = createLogger({ write: cap.write, now: () => 1 })
+    logger.info('注册', { apiKey: KEY_A })
+    const weird = new Error('认证异常')
+    weird.code = KEY_A
+    logger.error('异常入列', { err: weird })
+    expect(cap.lines()[1].err.code).toBe('sk-****1111')
+    expect(cap.all()).not.toContain(KEY_A.slice(0, -4))
+  })
+
   it('R33 纪律：ConfigLoadError.cause 里的 key 绝不出现在任何日志行——cause 只走 summarizeThrown 同一过滤器', () => {
     const FAKE = 'sk-CAUSELEAK-abcdefg-3456'
     const rawCause = new SyntaxError('Unexpected token \'x\', "' + FAKE + '…" is not valid JSON at position 42')
