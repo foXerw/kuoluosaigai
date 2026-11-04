@@ -9,6 +9,20 @@
   "bin": {
     "saigai-bot": "./bin/saigai-bot.js"
   },
+  "files": [
+    "deploy",
+    "bin",
+    "cli.js",
+    "config.js",
+    "converge.js",
+    "doctor.js",
+    "host.js",
+    "lock.js",
+    "log.js",
+    "rpc.js",
+    "state.js",
+    "watch.js"
+  ],
   "scripts": {
     "test": "vitest run"
   },

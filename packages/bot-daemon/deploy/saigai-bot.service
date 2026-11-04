@@ -1,0 +1,70 @@
+# saigai-bot daemon systemd unit（P1 Task 12，spec §8.5）
+#
+# —— 下面的关键值全是决策不是建议（§8.5 钉死）——
+# Restart=always、RestartSec=5、After=network-online.target、MemoryMax=192M、
+# DynamicUser=yes、ProtectSystem=strict + ReadWritePaths 指向数据目录、
+# ExecStart=/usr/bin/env saigai-bot run。
+# 这些整行由 packages/bot-daemon/tests/deploy.test.js 逐行钉住；开发机没有 systemd，
+# **语法验证必须在目标 VM 上跑**（安装步骤见同目录 README.md）：
+#   systemd-analyze verify saigai-bot.service
+#
+# 前置：saigai-bot 已 `npm install -g`，node 全局 bin 在 systemd 服务的 PATH 里可达。
+# 数据目录约定：/var/lib/saigai-bot/.config/saigai-bot/（锁、state.json、rpc.json、
+# 配置文件都在这；saigai-bot.config.js 需先就位，见 README「首次启动」）。
+
+[Unit]
+Description=kuoluosaigai saigai-bot 聊天室 bot daemon（P1）
+# daemon 启动即连 WS、出网打 provider——那是 §5 的核心前提。After 只排顺序不拉目标，
+# 配 Wants 把 network-online.target 真正请进场。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# /usr/bin/env 走 PATH 解析 saigai-bot；子命令 run 的语义与退出码见 README。
+ExecStart=/usr/bin/env saigai-bot run
+
+# 决策：无论怎么退都拉回（含退 1 的坏配置、退 3 的锁被占——所以**先 validate/doctor
+# 再 start**，想停就用 systemctl stop，受管的 stop 不触发重启）。
+Restart=always
+RestartSec=5
+
+# 决策：192M 内存上限。越限是 cgroup OOM 硬杀 + 上面那条自动复活——症状是 journal
+# 里一声 Killed，而不是缓慢泄漏。会话缓冲本就纯内存（§8.4），重启丢的只是缓冲；
+# 身份与 token 账目由 state.json 兜住。
+MemoryMax=192M
+
+# 决策：非 root 专用身份。DynamicUser 每次启动铸新 UID/GID，无驻留账号、无登录面；
+# 数据目录归 StateDirectory 自动创建并随每次启动对账属主。
+DynamicUser=yes
+
+# 决策：全盘只读，唯一写面是下面声明的路径。ProtectHome/PrivateTmp/NoNewPrivileges
+# 是 §8.5 精神（常驻面收窄）的低风险补充，不是新决策。
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=yes
+NoNewPrivileges=yes
+StateDirectory=saigai-bot
+ReadWritePaths=/var/lib/saigai-bot
+
+# CLI 默认数据目录 = os.homedir()/.config/saigai-bot（cli.js）。DynamicUser 的 $HOME
+# 缺省不可依赖，显式钉死 → 实际数据目录：/var/lib/saigai-bot/.config/saigai-bot/。
+Environment=HOME=/var/lib/saigai-bot
+
+# —— provider key：绝不写进配置文件明文 ——
+# 配置里只写 `apiKey: process.env.KUO_LLM_KEY`（watcher 每轮真重导入，env 每次重载
+# 重读，见 watch.js 文件头）；key 本身从环境来，两条路任选其一：
+#   (a) 推荐：/etc/saigai-bot/saigai-bot.env 里一行 KUO_LLM_KEY=sk-…（root:600）。
+#       下面 EnvironmentFile 的 `-` 前缀 = 文件不存在不报错（本地开发不拦启动）。
+#   (b) 图省事：取消下一行注释填真 key——代价是 key 进 unit 文件本体和
+#       `systemctl show` 输出，介意者用 (a)。
+# Environment=KUO_LLM_KEY=sk-replace-me
+EnvironmentFile=-/etc/saigai-bot/saigai-bot.env
+
+# systemctl stop 发 SIGTERM：CLI 按钉死顺序关停（watcher.stop → control.close →
+# host.shutdown → lock.release，R34 的退出码 4 就从这串步骤里出）。全是本地动作，30s 富余。
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
