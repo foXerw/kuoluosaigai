@@ -454,3 +454,17 @@ describe('createIdleScheduler', () => {
     expect(rng.count()).toBe(4)
   })
 })
+
+describe('noteSpoken({ rollAfk:false })（P4 分段连发）', () => {
+  it('只推进小时计数与最小间隔，不消耗 AFK 骰', () => {
+    const clock = fakeClock()
+    const rng = seqRng([0.5]) // 仅构造 streakLimit；之后任何 rng 调用都会抛错
+    const r = createRhythm({ rng, now: clock.now })
+
+    r.noteSpoken({ rollAfk: false })
+    r.noteSpoken({ rollAfk: false })
+    expect(r.status().hourCount).toBe(2)
+    expect(r.status().afkUntil).toBe(null)
+    expect(rng.count()).toBe(1)
+  })
+})

@@ -173,13 +173,18 @@ export function createRhythm({
       return units * between(rng, p.typingMsPer50)
     },
 
-    /** 记录「本 bot 真的发了一条消息」：推进小时计数、刷新最小间隔、掷 AFK 骰（裁定 F2a）。 */
-    noteSpoken() {
+    /**
+     * 记录「本 bot 真的发了一条消息」：推进小时计数、刷新最小间隔、掷 AFK 骰（裁定 F2a）。
+     * P4：分段连发的一次输出是**一个社交动作**，AFK 骰一轮只掷一次——调用方对同一轮的
+     * 后续段传 `{ rollAfk:false }`，避免 4 段把 15%/段的 AFK 概率叠成 ~48%。
+     * @param {{ rollAfk?: boolean }} [opts] 缺省 true → 旧行为逐字节不变
+     */
+    noteSpoken({ rollAfk: doRollAfk = true } = {}) {
       const t = now()
       settle(t)
       hourCount += 1
       lastSpokenAt = t
-      rollAfk(t)
+      if (doRollAfk) rollAfk(t)
     },
 
     /**

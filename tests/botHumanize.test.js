@@ -107,16 +107,30 @@ describe('applyTone', () => {
 })
 
 describe('splitSegments', () => {
-  it('按句末标点拆分并保留标点', () => {
-    expect(splitSegments('好。行！那就这样？')).toEqual(['好。', '行！', '那就这样？'])
+  it('按句末标点拆分；过短碎片（<3 码点）并入邻段', () => {
+    expect(splitSegments('好。行！那就这样？')).toEqual(['好。行！', '那就这样？'])
+  })
+
+  it('足够长的相邻短句保持独立', () => {
+    expect(splitSegments('好的。行吧！那就这样？')).toEqual(['好的。', '行吧！', '那就这样？'])
   })
 
   it('无标点 → 单段', () => {
     expect(splitSegments('没有标点的一段话')).toEqual(['没有标点的一段话'])
   })
 
+  it('省略号是一处边界，不会拆出孤立的「…」', () => {
+    expect(splitSegments('啊……好吧')).toEqual(['啊……好吧'])
+    expect(splitSegments('这是真的……我不信。')).toEqual(['这是真的……', '我不信。'])
+  })
+
+  it('连续超短句合并，不产生刷屏微消息', () => {
+    expect(splitSegments('好。行。嗯。对。')).toEqual(['好。行。嗯。对。'])
+  })
+
   it('超过 max 时尾部并入最后一段', () => {
-    expect(splitSegments('a。b。c。d。e。f。', 4)).toEqual(['a。', 'b。', 'c。', 'd。e。f。'])
+    expect(splitSegments('第一句。第二句。第三句。第四句。第五句。第六句。', 4))
+      .toEqual(['第一句。', '第二句。', '第三句。', '第四句。第五句。第六句。'])
   })
 
   it('换行也作为段边界', () => {
@@ -136,12 +150,12 @@ describe('planReply', () => {
   })
 
   it('强制分段：标点拆开、逐段做语气处理', () => {
-    const out = planReply('好。行！那就这样？', {
+    const out = planReply('好的。行吧！那就这样？', {
       rng: seq([0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
       targetLen: 20,
       allowSegments: true,
     })
-    expect(out).toEqual({ silent: false, segments: ['好', '行！', '那就这样？'] })
+    expect(out).toEqual({ silent: false, segments: ['好的', '行吧！', '那就这样？'] })
   })
 
   it('强制不分段：一条整句', () => {

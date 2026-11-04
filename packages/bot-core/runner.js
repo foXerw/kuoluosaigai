@@ -103,7 +103,13 @@ export function createBotRunner({
 }) {
   const buffer = createContextBuffer()
   const badge = `BOT·${String(bot.name ?? '').slice(0, 12)}` // 全局约束：人格名 ≤12 截断
-  const systemPrompt = buildSystemPrompt({ name: bot.name, persona: bot.persona, override: bot.rawPrompt })
+  // P4：few-shot 随 humanize 开关走——humanize:false 的直连消费者拿到逐字节旧 system prompt。
+  const systemPrompt = buildSystemPrompt({
+    name: bot.name,
+    persona: bot.persona,
+    override: bot.rawPrompt,
+    fewShot: humanize,
+  })
 
   let rhythm = null
   let connection = null
@@ -318,24 +324,32 @@ export function createBotRunner({
       }
       // B7 双保险其一：在途期间切房/停机 → 响应作废（连打字延迟都不掷）
       if (!started || epoch !== roomEpoch) return
+
+      // token 用量按「一次成功的 LLM 调用」记一次——沉默/空回复同样产生真实花费，
+      // 不能因为没发消息就漏记（messages 才按实际发出的条数逐条累加）。
+      session = {
+        ...session,
+        promptTokens: session.promptTokens + res.promptTokens,
+        completionTokens: session.completionTokens + res.completionTokens,
+      }
+
       let segments
       if (humanize) {
         // 沉默 → 整轮不发送、不记账、不掷 typing/afk（预算按“实际发出的消息”计）。
         // drowsy 时不拆段：迷糊的人不会连珠炮。
         const plan = planReply(res.text, { rng: humanizeRng, targetLen, allowSegments: !drowsy })
-        if (plan.silent) return
+        if (plan.silent) {
+          patch({ session: { ...session } })
+          return
+        }
         segments = plan.segments
       } else {
         const text = clampText(res.text) // B6：发送前必截（llm 只 trim 不截断）
         segments = text ? [text] : []
       }
-      if (!segments.length) return // B6：空回复不发
-
-      // token 用量按「一次 LLM 调用」记一次；messages 按「实际发出的条数」逐条累加。
-      session = {
-        ...session,
-        promptTokens: session.promptTokens + res.promptTokens,
-        completionTokens: session.completionTokens + res.completionTokens,
+      if (!segments.length) {
+        patch({ session: { ...session } }) // B6：空回复不发，但 token 账照记
+        return
       }
 
       const typing = rhythm.typingDelay(segments.join('').length)
@@ -345,6 +359,7 @@ export function createBotRunner({
       // B7 双保险其二：触发帧所在房必须仍是当前房
       if (job.frame && job.frame.roomId !== connection.currentRoomId) return
 
+      let afkRolled = false
       for (let i = 0; i < segments.length; i++) {
         if (i > 0) {
           // 段间拟人停顿（spec §10.2“间隔抽延迟”）：固定 8s minGap 管不到同一轮的连发，
@@ -375,7 +390,9 @@ export function createBotRunner({
           text,
         })
         rev += 1
-        rhythm.noteSpoken() // 小时计数/最小间隔/AFK 掷骰推进（rhythm 内部记 rng 顺序）
+        // 小时计数/最小间隔逐条推进；AFK 骰整轮只掷一次（分段是一个社交动作）。
+        rhythm.noteSpoken({ rollAfk: !afkRolled })
+        afkRolled = true
         rateStreak = 0 // 成功发言打断 rate 连续计数（B4「连续」口径）
         cooling = false
         session = { ...session, messages: session.messages + 1 }

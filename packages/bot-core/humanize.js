@@ -119,24 +119,45 @@ export function applyTone(text, rng = Math.random) {
 export function splitSegments(text, max = HUMANIZE_DEFAULTS.maxSegments) {
   if (typeof text !== 'string') return []
   const limit = Number.isFinite(max) ? Math.max(1, Math.floor(max)) : HUMANIZE_DEFAULTS.maxSegments
-  const pieces = []
+  const chars = Array.from(text)
+  const raw = []
   let buf = ''
 
   const flush = () => {
     const t = buf.trim()
-    if (t) pieces.push(t)
+    if (t) raw.push(t)
     buf = ''
   }
 
-  for (const ch of Array.from(text)) {
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]
     if (ch === '\n' || ch === '\r') {
       flush()
       continue
     }
     buf += ch
-    if (SENTENCE_END.has(ch)) flush()
+    if (SENTENCE_END.has(ch)) {
+      // 连续的「…」是一整串省略号：只在最后一个「…」处收段，避免拆出孤立的「…」。
+      if (ch === '…' && chars[i + 1] === '…') continue
+      flush()
+    }
   }
   flush()
+
+  // 合并过短碎片（<3 码点）：优先并回前一段；段首碎片并进下一段。
+  // 目的：不让「好。行。嗯。对。」变成四条 2 字微消息。
+  const pieces = []
+  for (const piece of raw) {
+    if (Array.from(piece).length < 3 && pieces.length > 0) {
+      pieces[pieces.length - 1] += piece
+    } else {
+      pieces.push(piece)
+    }
+  }
+  if (pieces.length > 1 && Array.from(pieces[0]).length < 3) {
+    pieces[1] = pieces[0] + pieces[1]
+    pieces.shift()
+  }
 
   if (pieces.length <= limit) return pieces
   const head = pieces.slice(0, limit - 1)
