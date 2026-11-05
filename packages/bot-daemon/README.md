@@ -45,7 +45,7 @@ saigai-bot status --data-dir ./data
 daemon 跑起来之后：
 
 ```bash
-saigai-bot pair            # 打印 6 位一次性配对码（60s），在网站 BOT DECK 输入
+saigai-bot pair            # 打印 6 位一次性配对码（60s），在网站 BOT DECK 的「＋配对设备」输入
 saigai-bot revoke --all    # 撤销所有已配对浏览器，并轮换本机设备令牌
 ```
 

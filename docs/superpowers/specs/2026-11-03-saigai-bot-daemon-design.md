@@ -545,6 +545,25 @@ ECDH 配对（密钥交换 + 面板侧加密），代价是配对流程复杂一
   `/device` 真链路契约测试补齐。
 - **测试**：全量 773 → 820（474 + 79 + 267）。
 
+### 11.10 实现状态（P3c 浏览器远端 deck，2026-11-06）
+
+- **入口**：BOT DECK 头部增加 deck 切换（本浏览器 / 已配对设备 / ＋配对设备），
+  不新开覆盖层；本地面板行为与测试指纹不变。
+- **远端 store**：`src/bots/remote.js`（宿主无关，注入 reactive/storage/WebSocket）
+  + `src/bots/remoteStore.js`（Vue/localStorage 适配）。浏览器只持有服务器签发的
+  **session 凭证**；roster 存 localStorage `kuoluosaigai:devices:v1`，不渲染 token。
+- **配对**：在 daemon 本机跑 `saigai-bot pair` 拿 6 位码 → 面板输入 → `pair-claim`；
+  成功后自动 `dev-auth` 并显示在线态。会话列表可刷新/逐个撤销。
+- **远端编辑**：复用 BotCard；启停/切房/改人格/增删 bot/buffer.clear 走 `dev-cmd`；
+  `dev-state` 增加 persona/chattiness/temperature/model 等非敏感字段（无 apiKey）。
+  API key 只显示 `****后4位`（`keyHint`），**面板不提供改 key**（Q5a）。
+- **语义提示**：面板明写「远端改人格/增删 bot 是运行时修改，daemon 重启回配置；
+  切房持久化（R20）」；新增 bot 提示需在 daemon 本机配置 key 才能启动。
+- **测试**：前端 488（新增 remote store 8 + RemoteDeck 5 + BotDeck 切换 1），
+  全量 834（488 + 79 + 267）。
+- **未实测**：真实手机 4G + Cloudflare Tunnel 的配对/交互链路（协议两端都有真 WS
+  契约测试，但未在公网环境人工验收）。
+
 ---
 
 ## 12. 成本与刹车（把上一轮欠的账写死在文档里）
