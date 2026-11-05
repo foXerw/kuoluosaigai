@@ -17,6 +17,7 @@
     "deploy/saigai-bot.service",
     "bin",
     "cli.js",
+    "commands.js",
     "config.js",
     "converge.js",
     "device.js",
