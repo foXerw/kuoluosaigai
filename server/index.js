@@ -4,6 +4,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { createRegistry, genRoomId } from './rooms.js'
+import { createDeviceStore } from './devices.js'
+import { createRelay } from './relay.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 统一生产服务：同进程托管 dist/ 静态前端；可用 KUO_DIST_DIR 覆盖（测试用）
@@ -85,6 +87,27 @@ function now() {
   return Date.now()
 }
 
+/** P3：设备路径与参与者路径在同一端口上分流；不新增端口/证书。 */
+function isDevicePath(req) {
+  try {
+    return new URL(req.url, 'http://localhost').pathname === '/device'
+  } catch (e) {
+    return false
+  }
+}
+
+/**
+ * 配对限速键（Q8）：CF Tunnel 后面源站看到的 remoteAddress 永远是 cloudflared，
+ * 故优先 CF-Connecting-IP。**前提是源站端口不对公网开放**（见部署文档）；否则该头可伪造。
+ */
+function clientIp(req) {
+  const raw = req.headers['cf-connecting-ip']
+  const v = Array.isArray(raw) ? raw[0] : raw
+  if (typeof v === 'string' && v) return v.slice(0, 64)
+  const addr = req.socket && req.socket.remoteAddress
+  return typeof addr === 'string' && addr ? addr.slice(0, 64) : 'unknown'
+}
+
 function noop() {}
 
 // 心跳扫描纯函数：isAlive=false 的连接判为死链终止；其余置 false 并 ping（客户端自动回 pong 重置 isAlive）
@@ -103,6 +126,9 @@ export function createServer(opts = {}) {
   const {
     // 默认路径按 __dirname 解析（不随进程 cwd 漂移），KUO_ROOMS_FILE 可覆盖
     roomsFile = process.env.KUO_ROOMS_FILE ?? path.resolve(__dirname, 'data', 'rooms.log'),
+    // P3：设备身份/配对会话的第二处落盘；KUO_DEVICES_FILE 可覆盖（测试必用临时文件）
+    devicesFile = process.env.KUO_DEVICES_FILE ?? path.resolve(__dirname, 'data', 'devices.json'),
+    relayOpts = {}, // 测试接缝：限速/上限可调
     roomCap = 100,
     historyRespMax = 200,
     joinFailLimit = 10,
@@ -118,6 +144,19 @@ export function createServer(opts = {}) {
   // 后续精化方向：解析后逐帧软弃（先验条数/字节再 JSON.parse），本轮不做。
   const wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 })
   const registry = createRegistry(roomsFile)
+  // P3 设备通道：/device 路径专用；与参与者协议完全隔离（不占房、不计在线、不进历史）。
+  const deviceStore = createDeviceStore({ file: devicesFile })
+  const relay = createRelay({
+    store: deviceStore,
+    send: (ws, frame) => {
+      try {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
+      } catch (e) {
+        /* 单连接发送失败不拖垮中继 */
+      }
+    },
+    ...relayOpts,
+  })
   const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates, switches }
   const rooms = new Map() // roomId -> Set<ws>
   const byConnId = new Map() // selfId(connId) -> ws：history-res 点对点路由用，入房登记、断连删除
@@ -228,6 +267,27 @@ export function createServer(opts = {}) {
     ws.on('pong', () => {
       ws.isAlive = true
     })
+
+    // —— P3 设备通道：/device 不参与参与者协议（不发 assign、不进 clients/rooms） ——
+    if (isDevicePath(req)) {
+      const ip = clientIp(req)
+      ws.on('message', (raw) => {
+        let frame
+        try {
+          frame = JSON.parse(raw.toString())
+        } catch (e) {
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: 'error', msg: 'bad frame' }))
+          return
+        }
+        relay.handle(ws, frame, { ip })
+      })
+      ws.on('close', () => relay.onClose(ws))
+      ws.on('error', () => {
+        /* close 负责清理 */
+      })
+      return
+    }
+
     const requested = new URL(req.url, 'http://localhost').searchParams.get('nick')
     const nick = isValidNick(requested) ? requested : genNick()
     const info = {
@@ -364,7 +424,15 @@ export function createServer(opts = {}) {
     close() {
       return new Promise((resolve) => {
         clearInterval(heartbeat)
-        for (const ws of clients.keys()) ws.close()
+        // 参与者与设备连接都在 wss.clients：设备连接不在 clients Map 里，必须单独遍历。
+        for (const ws of wss.clients) {
+          relay.onClose(ws) // 对参与者是无害空操作（relay 只认识设备连接）
+          try {
+            ws.close()
+          } catch (e) {
+            /* 已关闭的连接忽略 */
+          }
+        }
         clients.clear()
         rooms.clear()
         byConnId.clear()
