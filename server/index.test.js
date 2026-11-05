@@ -397,6 +397,24 @@ describe('chat server', () => {
       c.ws.close()
     })
 
+    it('history-req 只扇出给至多 historyReplyCap 个同房成员（默认 3）', async () => {
+      await boot({ historyReplyCap: 3 })
+      const conns = []
+      for (let i = 0; i < 5; i++) {
+        const c = await connect()
+        await nextFrame(c.received)
+        await joinRoom(c, 'magenta')
+        conns.push(c)
+      }
+      for (const c of conns) c.received.length = 0
+      send(conns[0], { type: 'history-req' })
+      await settle(120)
+      const got = conns.slice(1).filter((c) => c.received.some((f) => f.type === 'history-req'))
+      expect(got).toHaveLength(3)
+      expect(conns[0].received).toHaveLength(0)
+      for (const c of conns) c.ws.close()
+    })
+
     it('delivers history-res to the requester after the three-way same-room check', async () => {
       await boot()
       const a = await connect()

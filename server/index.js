@@ -135,6 +135,7 @@ export function createServer(opts = {}) {
     relayOpts = {}, // 测试接缝：限速/上限可调
     roomCap = 100,
     historyRespMax = 200,
+    historyReplyCap = 3, // history-req 最多投给几个同房成员（P2P 合并只需 ≥2 佐证）
     joinFailLimit = 10,
     createLimit = 5,
     globalCreateLimit = 30, // 服务端级：所有连接合计 30 次/60s（防分布式刷注册表）
@@ -181,6 +182,21 @@ export function createServer(opts = {}) {
     for (const ws of members) {
       if (ws === except || ws.readyState !== ws.OPEN) continue
       ws.send(data)
+    }
+  }
+
+  // 有上限的房内广播：历史请求只需要少数佐证者，避免入房人数 × 响应者数的 O(N²) 风暴。
+  function sendToRoomLimited(roomId, frame, except, limit) {
+    const members = rooms.get(roomId)
+    if (!members) return
+    const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1
+    const data = JSON.stringify(frame)
+    let sent = 0
+    for (const ws of members) {
+      if (ws === except || ws.readyState !== ws.OPEN) continue
+      ws.send(data)
+      sent += 1
+      if (sent >= max) break
     }
   }
 
@@ -372,10 +388,11 @@ export function createServer(opts = {}) {
         case 'history-req': {
           // 只中继给同房其他人（except=ws 让请求者天然不收）；未入房无中继对象，静默丢弃
           if (!info.roomId) break
-          sendToRoom(
+          sendToRoomLimited(
             info.roomId,
             { type: 'history-req', roomId: info.roomId, from: info.connId },
-            ws
+            ws,
+            historyReplyCap
           )
           break
         }
