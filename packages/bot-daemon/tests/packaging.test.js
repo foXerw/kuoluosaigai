@@ -88,3 +88,50 @@ describe('packaging：daemon 包', () => {
     expect(readme).toContain('KUO_LLM_KEY')
   })
 })
+
+describe('packaging：Docker / NAS', () => {
+  const ROOT = path.resolve(HERE, '..', '..', '..')
+  const DEPLOY = path.join(DAEMON_DIR, 'deploy')
+  const dockerfile = readText(path.join(DEPLOY, 'Dockerfile'))
+  const compose = readText(path.join(DEPLOY, 'compose.yaml'))
+  const dockerignore = readText(path.join(ROOT, '.dockerignore'))
+
+  it('Dockerfile 用 Node 22、非 root、pack 本地包并给出固定入口', () => {
+    expect(dockerfile).toContain('FROM node:22-alpine')
+    expect(dockerfile).toContain('npm pack')
+    expect(dockerfile).toContain('USER node')
+    expect(dockerfile).toContain('/data')
+    expect(dockerfile).toContain('ENTRYPOINT ["saigai-bot"]')
+    expect(dockerfile).toContain('"run", "--config", "/config/saigai-bot.config.js", "--data-dir", "/data"')
+  })
+
+  it('Dockerfile / compose 给出多架构构建线索', () => {
+    const both = dockerfile + '\n' + compose
+    expect(both).toContain('linux/amd64')
+    expect(both).toContain('linux/arm64')
+  })
+
+  it('compose 可常驻、挂载配置只读与数据可写、key 只走环境变量', () => {
+    expect(compose).toContain('restart: unless-stopped')
+    expect(compose).toContain('./config:/config:ro')
+    expect(compose).toContain('./data:/data')
+    expect(compose).toContain('KUO_LLM_KEY')
+    expect(compose).toContain('TZ=')
+    expect(compose).toContain('command:')
+    expect(compose).toContain('run')
+    expect(compose).toContain('/config/saigai-bot.config.js')
+    expect(compose).toContain('/data')
+  })
+
+  it('.dockerignore 排除依赖/构建/工作树，避免镜像上下文膨胀', () => {
+    for (const line of ['node_modules', '.git', 'dist', '.claude']) {
+      expect(dockerignore).toContain(line)
+    }
+  })
+
+  it('Docker 材料不含明文 API key', () => {
+    for (const text of [dockerfile, compose, dockerignore]) {
+      expect(text).not.toMatch(/sk-[A-Za-z0-9]{8,}/)
+    }
+  })
+})

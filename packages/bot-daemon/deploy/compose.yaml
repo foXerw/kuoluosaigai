@@ -1,0 +1,35 @@
+# saigai-bot 常驻 daemon —— NAS / Docker 模板（P2 / spec §9）
+#
+# 目录约定（与本文件同级）：
+#   ./config/saigai-bot.config.js   # 纯数据 ESM 配置，只读挂载
+#   ./data/                         # 锁、state.json、rpc.json（须可写、持久）
+#
+# 首次准备：
+#   mkdir -p config data
+#   cp /path/to/saigai-bot.config.js config/
+#   sudo chown -R 1000:1000 data    # 容器内 node 用户 uid=1000
+#   printf 'KUO_LLM_KEY=sk-...\n' > .env
+#   docker compose up -d
+#
+# 多架构镜像（在仓库根执行；NAS 通常是 linux/amd64 或 linux/arm64）：
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f packages/bot-daemon/deploy/Dockerfile \
+#     -t <你的registry>/kuoluosaigai/saigai-bot:latest --push .
+# 本地单架构构建（不需要 registry）：
+#   docker build -f packages/bot-daemon/deploy/Dockerfile -t kuoluosaigai/saigai-bot:latest .
+
+services:
+  saigai-bot:
+    image: kuoluosaigai/saigai-bot:latest
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+    user: "1000:1000"
+    environment:
+      - TZ=Asia/Shanghai
+      # 只从宿主环境注入；不要把这个值写进 compose 文件本身（A1/A3）。
+      - KUO_LLM_KEY=${KUO_LLM_KEY:?请先在 .env 或宿主环境设置 KUO_LLM_KEY}
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    command: ["run", "--config", "/config/saigai-bot.config.js", "--data-dir", "/data"]

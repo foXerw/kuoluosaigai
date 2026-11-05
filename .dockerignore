@@ -1,0 +1,19 @@
+# Docker build context 只用于 P2 的 saigai-bot 镜像（见 packages/bot-daemon/deploy/Dockerfile）。
+# 镜像构建只需要 packages/bot-core 与 packages/bot-daemon 的发布内容。
+node_modules
+**/node_modules
+dist
+coverage
+.git
+.gitignore
+.claude
+.superpowers
+tests
+**/tests
+server
+src
+public
+docs
+*.log
+.env
+.env.*
