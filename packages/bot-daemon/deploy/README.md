@@ -4,6 +4,9 @@
 **把十二类「看起来像 bug、实际是决策」的行为说清楚**，免得值班的人和报障的人隔空吵架。
 每条都注明代码出处；文档与代码冲突时，以代码为准并请回报修文档。
 
+三路线总览（PVE/NAS/Windows）见仓库 [`docs/saigai-bot-deploy.md`](../../../docs/saigai-bot-deploy.md)；
+本文件只展开 Linux systemd 与运行语义。
+
 ---
 
 ## 1. 安装（Linux VM）

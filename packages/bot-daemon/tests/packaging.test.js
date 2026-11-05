@@ -135,3 +135,47 @@ describe('packaging：Docker / NAS', () => {
     }
   })
 })
+
+describe('packaging：三路线部署文档', () => {
+  const ROOT = path.resolve(HERE, '..', '..', '..')
+  const doc = readText(path.join(ROOT, 'docs', 'saigai-bot-deploy.md'))
+
+  it('三条部署路径都有独立小节', () => {
+    expect(doc).toMatch(/## .*PVE|## .*systemd/)
+    expect(doc).toMatch(/## .*NAS/)
+    expect(doc).toMatch(/## .*Windows/)
+  })
+
+  it('key 承诺、成本刹车与重启语义写清楚', () => {
+    expect(doc).toContain('KUO_LLM_KEY')
+    expect(doc).toContain('quietHours')
+    expect(doc).toContain('globalHourlyMessages')
+    expect(doc).toContain('重启')
+    expect(doc).toContain('缓冲')
+  })
+
+  it('如实标注未实测项与发布前置', () => {
+    expect(doc).toContain('未实测')
+    expect(doc).toContain('npm publish')
+    expect(doc).toContain('kuoluosaigai-bot-core')
+    expect(doc).toContain('许可证')
+    // 发布顺序：core 先于 daemon
+    const coreAt = doc.indexOf('kuoluosaigai-bot-core')
+    const daemonAt = doc.indexOf('kuoluosaigai-bot-daemon')
+    expect(coreAt).toBeGreaterThan(-1)
+    expect(daemonAt).toBeGreaterThan(coreAt)
+  })
+
+  it('多架构与 NAS 权限提示在场', () => {
+    expect(doc).toContain('linux/amd64')
+    expect(doc).toContain('linux/arm64')
+    expect(doc).toMatch(/1000/)
+  })
+
+  it('README 与 deploy/README 都链接到部署文档', () => {
+    const readme = readText(path.join(ROOT, 'README.md'))
+    const deployReadme = readText(path.join(DAEMON_DIR, 'deploy', 'README.md'))
+    expect(readme).toContain('saigai-bot-deploy.md')
+    expect(deployReadme).toContain('saigai-bot-deploy.md')
+  })
+})

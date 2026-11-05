@@ -313,6 +313,21 @@ PVE VM 上连续跑 24h：无内存增长（bot 数固定）、无人时不出�
 依赖安装坑（记档，勿重复踩）：本机/服务器 npm 禁 remote 类型包（EALLOWREMOTE）、
 统一 lockfile registry、postinstall 被拦——文档里提前给出 `npm config set registry` 提示。
 
+### 9.1 实现状态（2026-11-05）
+
+- **npm**：`kuoluosaigai-bot-core` / `kuoluosaigai-bot-daemon` 已从 workspace 内部包改为
+  可发布元数据（去 `private`、`files`、`repository`、engines、README；daemon 依赖 core
+  `^0.1.0`）。仓库没有 LICENSE，元数据暂为 `UNLICENSED`——**发布前必须先定许可证**。
+  本机 npm 未登录，**未执行 `npm publish`**；`npm pack --dry-run` 已核对两个包内容。
+- **Docker/NAS**：`packages/bot-daemon/deploy/Dockerfile`（多阶段 pack→install、
+  node:22-alpine、非 root、`/data` 可写）+ `compose.yaml`（`restart: unless-stopped`、
+  config 只读、data 持久、`KUO_LLM_KEY` 环境注入）+ 根 `.dockerignore`。多架构命令
+  （linux/amd64 + linux/arm64）写入文档。**本机未安装 Docker，镜像与 compose 未实测**。
+- **文档**：`docs/saigai-bot-deploy.md` 覆盖 PVE/systemd、NAS/Docker、Windows 三路线，
+  含 key 承诺、成本/静默窗、重启清缓冲、npm registry 坑与「未实测」声明。
+- **测试**：daemon `tests/packaging.test.js` 钉住包元数据、Docker/compose 契约与文档
+  必备信息；全量测试 708→725（471 客户端 + 39 服务端 + 215 daemon）。
+
 ---
 
 ## 10. P4 — 拟人感提升（与上面三层正交；浏览器与 daemon 同时受益）

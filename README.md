@@ -23,7 +23,7 @@
 | 前端 | Vue 3 + Ant Design Vue（魔改主题）+ Vitest。自定义创意做英雄区，Ant Design 做结构化面板 |
 | 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库；唯一落盘是房间 ID 注册表 `server/data/rooms.log`（append-only），消息内容永不落盘 |
 | 传输 | WebSocket，JSON 文本帧 |
-| bot 核心包 | [`packages/bot-core`](packages/bot-core/)（`kuoluosaigai-bot-core`）：浏览器 BOT DECK 面板与未来 `saigai-bot` 常驻 daemon 共用的**宿主无关核心**——纯 ESM、零 Vue/DOM/localStorage，浏览器与 Node 两侧只是注入的宿主原语不同 |
+| bot 核心包 | [`packages/bot-core`](packages/bot-core/)（`kuoluosaigai-bot-core`）：浏览器 BOT DECK 面板与 `saigai-bot` 常驻 daemon 共用的**宿主无关核心**——纯 ESM、零 Vue/DOM/localStorage，浏览器与 Node 两侧只是注入的宿主原语不同 |
 
 生产默认统一服务：一个 Node 进程同端口托管 `dist/` 静态与 WebSocket（见下方部署）。多房间协议与 P2P 记忆的现行权威文档：[`docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md`](docs/superpowers/specs/2026-10-20-kuoluosaigai-multi-room-design.md)；[`docs/chatroom-architecture.md`](docs/chatroom-architecture.md) 为 v2 时期的历史技术文档（含大量「为什么这么设计」的问答，但单房间设定已过时）。
 
@@ -51,6 +51,10 @@ npm run build          # 生产构建，产物在 dist/
 > `npm test` 的 Node 地板是 **≥ 22**：`tests/botCoreNodeE2e.test.js` 直接使用 Node 原生全局 `WebSocket`（本机 v24 实测；此前由 jsdom 代供，抽包后纯 Node e2e 不再享有——这正是 P1 daemon 的处境）。未加 `engines` 字段，此约束以文档为准。
 
 ## 部署（统一服务）
+
+> 常驻 bot daemon（`saigai-bot`）的 PVE / NAS / Windows 三路线部署见
+> [`docs/saigai-bot-deploy.md`](docs/saigai-bot-deploy.md)；Dockerfile 与 compose 模板在
+> `packages/bot-daemon/deploy/`。
 
 整站可作为一个 Node Web 服务一键上线——前端静态 + WebSocket 同进程、同端口。适配 Render / Railway / Fly / VPS / Heroku 等能跑 Node 的平台。
 
@@ -134,4 +138,5 @@ packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 sai
 - [x] 部署：统一服务打包（`npm install && npm run build && npm start`，静态 + ws 同 PORT，同源免配）
 - [x] v3：多聊天室（纯 ID 房间、P2P 历史记忆、注册表落盘、反脚本护栏、RULES 页）
 - [x] P4 拟人化：Tieba few-shot + transcript 单条 + 目标长度/沉默/分段/语气/迷糊（bot-core，浏览器与 daemon 共用）
+- [x] P2 交付形态：可发布 npm 包 + Docker/NAS compose + PVE/NAS/Windows 三路线部署文档
 - [ ] 后续：性能摸测与优化轮、后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
