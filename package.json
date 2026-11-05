@@ -10,7 +10,8 @@
     "start": "node server/start.js",
     "lint": "vue-cli-service lint src tests packages",
     "test": "vitest run && npm run test --workspace kuoluosaigai-server && npm run test --workspace kuoluosaigai-bot-daemon",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench:server": "node scripts/bench-server.mjs"
   },
   "dependencies": {
     "ant-design-vue": "^4.2.6",
