@@ -35,7 +35,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kuo-bench-'))
 const server = createServer({
   roomsFile: path.join(tmp, 'rooms.log'),
   devicesFile: path.join(tmp, 'devices.json'),
-  historyReplyCap: HISTORY_CAP > 0 ? HISTORY_CAP : 1e9,
+  historyReplyCap: HISTORY_CAP > 0 ? HISTORY_CAP : 0, // 0 = 不限制
 })
 const port = await server.start(0)
 const url = `ws://127.0.0.1:${port}`
@@ -45,6 +45,7 @@ function connect() {
     const ws = new WebSocket(url)
     const frames = []
     const cache = [] // 模拟 useChat 的每房缓存：history-req 时据此回 history-res
+    const latencies = [] // 真实到达延迟：收到帧的当下就记，不等到整批结束
     const size = { bytes: 0 }
     const state = { roomId: null, selfId: null }
     ws.on('message', (raw) => {
@@ -61,6 +62,8 @@ function connect() {
         state.selfId = f.selfId
       } else if (f.type === 'message') {
         cache.push({ id: f.id, ts: f.ts, roomId: f.roomId, nick: f.nick, badge: f.badge, text: f.text })
+        const parts = String(f.text || '').split(':')
+        if (parts[0] === 'bench' && parts[2]) latencies.push(performance.now() - Number(parts[2]))
       } else if (f.type === 'history-req' && f.from !== state.selfId && cache.length) {
         ws.send(JSON.stringify({
           type: 'history-res',
@@ -70,7 +73,7 @@ function connect() {
         }))
       }
     })
-    ws.on('open', () => resolve({ ws, frames, size, cache, state }))
+    ws.on('open', () => resolve({ ws, frames, latencies, size, cache, state }))
     ws.on('error', reject)
   })
 }
@@ -107,7 +110,7 @@ try {
   const senders = clients.slice(0, Math.max(1, Math.min(clients.length, Math.ceil(MESSAGES / 10))))
   const effectiveMessages = Math.min(MESSAGES, senders.length * 10)
   const receivers = clients
-  const latencies = []
+  for (const c of clients) c.latencies.length = 0
   const tA = performance.now()
   for (let i = 0; i < effectiveMessages; i++) {
     senders[i % senders.length].ws.send(JSON.stringify({
@@ -125,15 +128,8 @@ try {
     'broadcast',
   )
   const broadcastMs = performance.now() - tA
-  // 收集只做一次，避免轮询重复计入
-  for (const c of receivers) {
-    for (const m of c.frames) {
-      if (m.type !== 'message') continue
-      const parts = String(m.text || '').split(':')
-      if (parts[0] === 'bench' && parts[2]) latencies.push(performance.now() - Number(parts[2]))
-    }
-    c.frames.length = 0
-  }
+  const latencies = receivers.flatMap((c) => c.latencies)
+  for (const c of receivers) c.frames.length = 0
 
   // B. 历史风暴
   const room = 'nebula'
@@ -167,7 +163,10 @@ try {
     'joiners joined',
   )
   const joinedMs = performance.now() - tB
-  for (const c of joiners) c.frames.length = 0
+  for (const c of joiners) {
+    c.frames.length = 0
+    c.size.bytes = 0 // 只统计 history-res 流量，不含 assign/joined/presence
+  }
   // 模拟 useChat：joined 后请求历史
   for (const c of joiners) c.ws.send(JSON.stringify({ type: 'history-req' }))
   await new Promise((r) => setTimeout(r, 1500))

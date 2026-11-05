@@ -115,6 +115,48 @@ describe('chat server', () => {
     conn.ws.close()
   })
 
+  it('默认 nick / 房号 / 消息 id 前缀不依赖 Math.random', async () => {
+    const original = Math.random
+    Math.random = () => { throw new Error('Math.random must not be used') }
+    try {
+      await boot()
+      const c = await connect()
+      const assign = await nextFrame(c.received)
+      expect(assign.nick).toMatch(/^ANON-[A-HJ-NP-Z2-9]{4}$/)
+      send(c, { type: 'create' })
+      const created = await nextFrame(c.received)
+      expect(created.type).toBe('created')
+      expect(created.roomId).toMatch(/^[a-z0-9]{6}$/)
+      c.ws.close()
+    } finally {
+      Math.random = original
+    }
+  })
+
+  it('恶意对象字段（toString 不可调用）只坏单帧，不打崩进程', async () => {
+    await boot()
+    const c = await connect()
+    await nextFrame(c.received)
+    // join.roomId 是对象：不得 String() 抛错，按空房间处理
+    send(c, { type: 'join', roomId: { toString: 123 } })
+    expect(await nextFrame(c.received)).toMatchObject({ type: 'join-error', reason: 'unknown' })
+    await joinRoom(c, 'magenta')
+    send(c, { type: 'message', text: { toString: 123 }, badge: { toString: 123 } })
+    const msg = await nextFrame(c.received)
+    expect(msg.type).toBe('message')
+    expect(msg.text).toBe('')
+    expect(msg.badge).toBe('')
+    // counts 里的对象键同样过滤
+    send(c, { type: 'counts', roomIds: [{ toString: 123 }, 'magenta'] })
+    const counts = await nextFrame(c.received)
+    expect(counts.counts).toEqual({ magenta: 1 })
+    // 进程还活着：新连接照常 assign
+    const d = await connect()
+    expect((await nextFrame(d.received)).type).toBe('assign')
+    c.ws.close()
+    d.ws.close()
+  })
+
   it('badge 超过 32 字符被截断（不再把任意长自报串广播给全房）', async () => {
     await boot()
     const conn = await connect()
@@ -413,6 +455,24 @@ describe('chat server', () => {
       expect(got).toHaveLength(3)
       expect(conns[0].received).toHaveLength(0)
       for (const c of conns) c.ws.close()
+    })
+
+    it('historyReplyCap=1：两名同房peer中只有一人收到，请求者仍不收', async () => {
+      await boot({ historyReplyCap: 1 })
+      const a = await connect()
+      const b = await connect()
+      const c = await connect()
+      for (const x of [a, b, c]) await nextFrame(x.received)
+      await joinRoom(a, 'amber')
+      await joinRoom(b, 'amber')
+      await joinRoom(c, 'amber')
+      for (const x of [a, b, c]) x.received.length = 0
+      send(a, { type: 'history-req' })
+      await settle(120)
+      const got = [b, c].filter((x) => x.received.some((f) => f.type === 'history-req'))
+      expect(got).toHaveLength(1)
+      expect(a.received).toHaveLength(0)
+      for (const x of [a, b, c]) x.ws.close()
     })
 
     it('delivers history-res to the requester after the three-way same-room check', async () => {

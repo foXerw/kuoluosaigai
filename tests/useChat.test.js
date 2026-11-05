@@ -78,6 +78,34 @@ async function openChat(c, { room = null, joined = null } = {}) {
 }
 
 describe('useChat', () => {
+  it('history-res 非数组不崩、超长只保留最新 200 条', async () => {
+    vi.useFakeTimers()
+    const w = mountChat()
+    const c = w.vm.c
+    c.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const s = lastSocket()
+    s.emit({ type: 'joined', roomId: 'nebula', online: 2, selfId: 1 })
+    const many = Array.from({ length: 300 }, (_, i) => ({ id: 'h' + i, ts: i, text: 't' + i }))
+    s.emit({ type: 'history-res', roomId: 'nebula', messages: many })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(c.messages.value.length).toBeLessThanOrEqual(200)
+    expect(c.messages.value.some((m) => m.id === 'h299')).toBe(true)
+  })
+
+  it('history-res 非数组消息不会让合并崩溃', async () => {
+    vi.useFakeTimers()
+    const w = mountChat()
+    const c = w.vm.c
+    c.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const s = lastSocket()
+    s.emit({ type: 'joined', roomId: 'nebula', online: 2, selfId: 1 })
+    s.emit({ type: 'history-res', roomId: 'nebula', messages: 'not-array' })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(c.messages.value).toEqual([])
+  })
+
   it('旧 socket 的迟到 close 不清空/不重连新连接（socket 同一性守卫）', async () => {
     const w = mountChat()
     const c = w.vm.c
@@ -88,6 +116,11 @@ describe('useChat', () => {
     c.connect() // s1 已 close 态 → 立即建 s2
     const s2 = lastSocket()
     expect(s2).not.toBe(s1)
+    s1.onopen() // 迟到 open 不得把状态翻成 open
+    s1.onmessage({ data: JSON.stringify({ type: 'joined', roomId: 'nebula', online: 1, selfId: 99 }) })
+    s1.onerror()
+    expect(c.status.value).toBe('connecting')
+    expect(c.currentRoom.value).toBe(null)
     s1.onclose({ code: 1006 }) // 迟到的旧 close
     expect(c.status.value).not.toBe('closed')
     expect(lastSocket()).toBe(s2)

@@ -91,6 +91,13 @@ function now() {
   return Date.now()
 }
 
+// 不可信字段只接受字符串：`String({toString: 123})` 会抛 TypeError，
+// 未认证帧 × 一个恶意对象就能打崩整个进程。非字符串一律当空值/非法值。
+function asStr(v, max = Infinity) {
+  if (typeof v !== 'string') return ''
+  return Number.isFinite(max) ? v.slice(0, max) : v
+}
+
 /** P3：设备路径与参与者路径在同一端口上分流；不新增端口/证书。 */
 function isDevicePath(req) {
   try {
@@ -136,6 +143,7 @@ export function createServer(opts = {}) {
     roomCap = 100,
     historyRespMax = 200,
     historyReplyCap = 3, // history-req 最多投给几个同房成员（P2P 合并只需 ≥2 佐证）
+    historyResLimit = 30, // 每连接 60s 内最多中继 30 份 history-res（防同房灌帧）
     joinFailLimit = 10,
     createLimit = 5,
     globalCreateLimit = 30, // 服务端级：所有连接合计 30 次/60s（防分布式刷注册表）
@@ -186,10 +194,15 @@ export function createServer(opts = {}) {
   }
 
   // 有上限的房内广播：历史请求只需要少数佐证者，避免入房人数 × 响应者数的 O(N²) 风暴。
+  // 选人按 Set 插入顺序取前 N（最早入房者最可能有缓存）；热门房里这会让同一批人
+  // 反复应答，后续若成为瓶颈可换轮转/随机起点。
   function sendToRoomLimited(roomId, frame, except, limit) {
     const members = rooms.get(roomId)
     if (!members) return
-    const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1
+    // 0 / Infinity / 非有限数 = 不限制（bench 的 --history-cap 0 语义）；负数钳到 1。
+    const max = limit === 0 || !Number.isFinite(limit)
+      ? members.size
+      : Math.max(1, Math.floor(limit))
     const data = JSON.stringify(frame)
     let sent = 0
     for (const ws of members) {
@@ -301,7 +314,12 @@ export function createServer(opts = {}) {
           if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: 'error', msg: 'bad frame' }))
           return
         }
-        relay.handle(ws, frame, { ip })
+        try {
+          relay.handle(ws, frame, { ip })
+        } catch (e) {
+          // 设备帧同样宁可单帧失败，不许打崩进程
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: 'error', msg: 'bad frame' }))
+        }
       })
       ws.on('close', () => relay.onClose(ws))
       ws.on('error', () => {
@@ -319,6 +337,7 @@ export function createServer(opts = {}) {
       times: [],
       joinFails: [],
       creates: [],
+      historyRes: [], // history-res 中继滑窗（防同房灌帧）
       switches: [], // 切房成功时刻的滑窗（push 见 joinRoom 成功路径）
     }
     clients.set(ws, info)
@@ -333,6 +352,8 @@ export function createServer(opts = {}) {
         send(ws, { type: 'error', msg: 'bad frame' })
         return
       }
+      // 任何一帧的畸形字段都不许逸出成进程级异常：单帧失败只回 error。
+      try {
       switch (frame.type) {
         case 'join': {
           // 反探测闸门：unknown 失败饱和后，后续 join（哪怕合法 ID）一律 rate、不再查注册表
@@ -340,7 +361,7 @@ export function createServer(opts = {}) {
             send(ws, { type: 'rate', ts: now() })
             break
           }
-          const roomId = String(frame.roomId ?? '')
+          const roomId = asStr(frame.roomId)
           // 切房成功闸门：切房窗饱和后，换房型 join 一律 rate、不执行任何房间变更；
           // 幂等重进当前房不消耗预算（否则饱和后连 joined 回执都拿不到，重连语义被打破）
           if (roomId !== info.roomId && windowSaturated(info.switches, switchLimit)) {
@@ -372,7 +393,7 @@ export function createServer(opts = {}) {
             send(ws, { type: 'rate', ts: now() })
             break
           }
-          const text = String(frame.text || '').slice(0, MAX_LEN)
+          const text = asStr(frame.text, MAX_LEN)
           const id = bootToken + (++msgSeq).toString(36)
           sendToRoom(info.roomId, {
             type: 'message',
@@ -380,7 +401,8 @@ export function createServer(opts = {}) {
             ts: now(),
             roomId: info.roomId,
             nick: info.nick,
-            badge: String(frame.badge || '').slice(0, 32), // 自报徽章不设上限等于让全房转发任意长串
+            // 自报徽章不设上限等于让全房转发任意长串；按码点截，避免劈开 emoji
+            badge: Array.from(asStr(frame.badge)).slice(0, 32).join(''),
             text,
           })
           break
@@ -398,19 +420,23 @@ export function createServer(opts = {}) {
         }
         case 'history-res': {
           // 防跨房污染：发送者当前房 === 帧 roomId === 目标当前房，任一不符整帧丢弃
-          const roomId = String(frame.roomId ?? '')
+          const roomId = asStr(frame.roomId)
           const target = byConnId.get(frame.to)
           const tinfo = target ? clients.get(target) : null
           if (!tinfo || info.roomId !== roomId || tinfo.roomId !== roomId) break
+          if (windowSaturated(info.historyRes, historyResLimit)) break
           const messages = Array.isArray(frame.messages)
             ? frame.messages.slice(-historyRespMax)
             : []
+          info.historyRes.push(now())
           send(target, { type: 'history-res', roomId, from: info.connId, messages })
           break
         }
         case 'counts': {
           // 超批量静默截断；注册表内 ID 给在线数（可 0），未知 ID 键缺席
-          const ids = Array.isArray(frame.roomIds) ? frame.roomIds.slice(0, countsBatchMax) : []
+          const ids = Array.isArray(frame.roomIds)
+            ? frame.roomIds.filter((id) => typeof id === 'string').slice(0, countsBatchMax)
+            : []
           const counts = {}
           for (const id of ids) {
             if (!registry.has(id)) continue
@@ -423,6 +449,9 @@ export function createServer(opts = {}) {
         default:
           // 未知帧：静默忽略（与 v1 一致）
           break
+      }
+      } catch (e) {
+        send(ws, { type: 'error', msg: 'bad frame' })
       }
     })
 

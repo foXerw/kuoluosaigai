@@ -8,6 +8,8 @@ const NICK_KEY = 'kuoluosaigai:nick'
 const NICK_RE = /^ANON-[A-HJ-NP-Z2-9]{4}$/ // 与服务端 NICK_CHARS 一致（剔除 O/I/0/1）
 const HISTORY_WINDOW_MS = 2000 // spec §7：history-res 收集窗口
 const HISTORY_RES_MAX = 200 // spec §7：历史响应每份上限（服务器同样硬截断，这里先自律）
+// 2s 窗口内最多保留多少份响应：同房攻击者可以无限灌 history-res，不能让它们全进内存。
+const HISTORY_RESPONSES_MAX = 12
 const NOTICE_MS = 5000 // joinNotice 自动清除
 // 每房本会话系统行封顶（丢最旧）：对应服务端切房成功节流 switchLimit=20/60s——
 // 高频 ping-pong 切房时两房的 join/leave/presence/rate 会持续灌入 sysByRoom，无界增长会冻死标签页
@@ -162,8 +164,9 @@ export function useChat(url, { badge = '' } = {}) {
     // 迟到（窗口已关）的响应同样被 !histWindow 挡下
     if (frame.roomId !== currentRoom.value) return
     if (frame.roomId !== histWindow.roomId) return
+    if (histWindow.responses.length >= HISTORY_RESPONSES_MAX) return
     // 防御：恶意/损坏响应不得把超大数组或非对象条目带进合并（服务器已截，这里是客户端半）。
-    const messages = Array.isArray(frame.messages) ? frame.messages.slice(0, HISTORY_RES_MAX) : []
+    const messages = Array.isArray(frame.messages) ? frame.messages.slice(-HISTORY_RES_MAX) : []
     histWindow.responses.push({ ...frame, messages })
   }
 

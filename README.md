@@ -43,7 +43,7 @@ echo "VUE_APP_WS_URL=ws://localhost:8081" > .env.local
 打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化；一边 `[+ NEW]` 建个私房、把 6 位 ID 粘给另一边加入，再切回公共房切回来——历史记录仍在（P2P 记忆）。
 
 ```bash
-npm test               # 前端 + 后端全量（现 845 个：客户端 493 + 服务端 84 + daemon 268，含纯 Node e2e）
+npm test               # 前端 + 后端全量（现 851 个：客户端 495 + 服务端 88 + daemon 268，含纯 Node e2e）
 npm run build          # 生产构建，产物在 dist/
 ```
 

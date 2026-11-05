@@ -128,6 +128,17 @@ describe('server /device channel', () => {
     })
   })
 
+  it('恶意对象字段只回 bad frame，设备通道与服务端继续存活', async () => {
+    await boot()
+    const d = await connect('/device')
+    send(d, { t: 'pair-claim', code: { toString: 123 } })
+    expect(await nextFrame(d.received)).toEqual({ t: 'error', msg: 'bad frame' })
+    const p = await connect()
+    expect((await nextFrame(p.received)).type).toBe('assign')
+    d.ws.close()
+    p.ws.close()
+  })
+
   it('未知 token 的浏览器与坏 session 得到同一错误', async () => {
     await boot()
     const b = await connect('/device')
