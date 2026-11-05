@@ -43,7 +43,7 @@ echo "VUE_APP_WS_URL=ws://localhost:8081" > .env.local
 打开两个浏览器窗口访问前端，各自经开机序列 → 进入聊天室，即可看到对方加入 / 发言 / 在线数变化；一边 `[+ NEW]` 建个私房、把 6 位 ID 粘给另一边加入，再切回公共房切回来——历史记录仍在（P2P 记忆）。
 
 ```bash
-npm test               # 前端 + 后端全量（现 388 个：客户端 349 + 服务端 39，含 2 个纯 Node e2e）
+npm test               # 前端 + 后端全量（现 845 个：客户端 493 + 服务端 84 + daemon 268，含纯 Node e2e）
 npm run build          # 生产构建，产物在 dist/
 ```
 
@@ -66,6 +66,7 @@ npm run build          # 生产构建，产物在 dist/
 | `npm run build` | 构建前端，产物在 `dist/` |
 | `npm start` | 启动统一生产服务：托管 `dist/` + WebSocket，同 `PORT` |
 | `npm test` | 跑前端 + 后端全部测试 |
+| `npm run bench:server` | 服务端基准（本机回环；结果与解读见 `docs/perf-baseline.md`） |
 
 平台流程即标准三步：
 
@@ -152,4 +153,5 @@ packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 sai
 - [x] P4 拟人化：Tieba few-shot + transcript 单条 + 目标长度/沉默/分段/语气/迷糊（bot-core，浏览器与 daemon 共用）
 - [x] P2 交付形态：可发布 npm 包 + Docker/NAS compose + PVE/NAS/Windows 三路线部署文档
 - [x] P3 控制中继：服务端设备通道/配对/路由、daemon 设备客户端/pair/revoke、浏览器远端 BOT DECK（本机/设备切换、会话撤销、keyHint）
-- [ ] 后续：性能摸测与优化轮、后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
+- [x] 硬化与性能基线：useChat socket 竞态、history 帧清洗、badge 截断、crypto 随机源、全局建房闸、HTML no-cache；`history-req` 扇出上限 3（历史流量 -69%，见 `docs/perf-baseline.md`）
+- [ ] 后续：后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
