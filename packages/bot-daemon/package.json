@@ -25,6 +25,7 @@
     "lock.js",
     "log.js",
     "rpc.js",
+    "runtime.js",
     "state.js",
     "watch.js"
   ],

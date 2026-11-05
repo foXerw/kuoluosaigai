@@ -52,8 +52,38 @@
 // deck 的 lifetime 有 10s 节流——不先冲刷，窗口内的 token 账会在 removeBot 删
 // store.lifetime[id] 的那一刻凭空蒸发，直接吃 Q2「state 拥有账目」的承诺。
 
+import path from 'node:path'
 import { createDeck, createNullLease } from 'kuoluosaigai-bot-core'
 import { diffConfigs, changedBotFields } from './converge.js'
+import { createRuntimeStore as createRuntimeStoreImpl, RUNTIME_FILE_NAME } from './runtime.js'
+
+/**
+ * R20：把 runtime.json 的房间覆盖应用到 deck。
+ * - baseRoom 与当前配置房不一致 → 配置改过房，清覆盖（配置赢）；
+ * - 一致 → 切到覆盖房（启动/热重载都可重复调用，已在目标房则不动）。
+ * @returns {{ applied: string[], cleared: string[] }}
+ */
+export function applyRoomOverrides({ deck, runtime, bots }) {
+  const applied = []
+  const cleared = []
+  if (!deck || !runtime) return { applied, cleared }
+  for (const bot of bots || []) {
+    const o = runtime.getRoomOverride(bot.id)
+    if (!o) continue
+    if (o.baseRoom !== bot.room) {
+      runtime.clearRoomOverride(bot.id)
+      cleared.push(bot.id)
+      continue
+    }
+    const item = deck.bots.find((b) => b.id === bot.id)
+    if (!item) continue
+    const effective = item.rt.roomId || item.roomId
+    if (effective === o.room) continue
+    deck.switchBotRoom(bot.id, o.room)
+    applied.push(bot.id)
+  }
+  return { applied, cleared }
+}
 
 // provider 的 deck 侧稳定 id：显式 id 寻址（Q3 同款原则），重启 load 回来的是同一条目，
 // ensureProvider 走 update 不重复 add。
@@ -118,12 +148,22 @@ function deckBotCfg(bot, model) {
  * }} options
  * @returns {{ boot: () => Promise<void>, converge: (nextCfg: object) => Promise<object>, snapshot: () => object, shutdown: () => void }}
  */
-export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocketImpl, sleep, createRunner } = {}) {
+export function createDaemonHost({
+  cfg,
+  store,
+  logger,
+  now = Date.now,
+  WebSocketImpl,
+  sleep,
+  createRunner,
+  createRuntime = createRuntimeStoreImpl, // 测试接缝
+} = {}) {
   if (!cfg || !store) throw new TypeError('createDaemonHost: cfg 与 store 必填')
   const log = logger || { info() {}, warn() {}, error() {} }
 
   let current = cfg
   let deck = null
+  let runtime = null
   let bootedAt = null
   // R27 捆绑②（R26「不可能看漏」的完成条件）：需要**进程重启**才能兑现的变化是粘滞位，
   // converge 置位、snapshot 常驻上报；只有换新 host（进程重启语义）才回 false。
@@ -203,6 +243,10 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
     // 一体化：deck 在此刻才构造（startedAt 锚点），启动在紧随其后的同一动作序列里。
     deck = buildDeck()
     deck.load() // brief 顺序：先 load 再调和（构造期 loadInto 已读盘，本调用是显式确认，幂等）
+    // R20：runtime.json 与 state.json 同目录（store.path 的文件态适配器才有 path）。
+    runtime = typeof store.path === 'string'
+      ? createRuntime({ file: path.join(path.dirname(store.path), RUNTIME_FILE_NAME) })
+      : null
     const orphans = store.readOrphans() // 必须在任何 persist 之前读：调和写盘会重算孤儿
 
     ensureProvider(current)
@@ -237,6 +281,15 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
         startable.push(bot.id)
         reuseOrphanNick(orphans, bot.id)
       }
+    }
+
+    // R20：启动前应用手机切过的房；配置房变过的覆盖在此清除并留痕。
+    const roomsApplied = applyRoomOverrides({ deck, runtime, bots: current.bots })
+    if (roomsApplied.applied.length) {
+      safeLog('info', 'R20 房间覆盖：已恢复 ' + roomsApplied.applied.join(', ') + ' 的运行时房间', { bots: roomsApplied.applied })
+    }
+    if (roomsApplied.cleared.length) {
+      safeLog('warn', 'R20 房间覆盖：配置房已变更，清除旧覆盖 ' + roomsApplied.cleared.join(', '), { bots: roomsApplied.cleared })
     }
 
     // 逐个启动——与 deck 构造同一动作序列（见文件头「一体化」）。
@@ -300,7 +353,11 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
       if (!prevBot || !nextBot) continue
       // A4：改名/改人格一律 updateBot，绝不 stop/start。room 是唯一例外通道——
       // deck 备有 switchBotRoom（同连接切房），不算掉线。
-      if (prevBot.room !== nextBot.room) deck.switchBotRoom(id, nextBot.room)
+      if (prevBot.room !== nextBot.room) {
+        // R20：配置改了房 → 配置赢，旧运行时覆盖作废，避免下次重启把配置房抢回去。
+        if (runtime) runtime.clearRoomOverride(id)
+        deck.switchBotRoom(id, nextBot.room)
+      }
       const patch = {}
       for (const k of changedBotFields(prevBot, nextBot)) {
         if (k === 'room') continue // 已由 switchBotRoom 处理
@@ -309,6 +366,9 @@ export function createDaemonHost({ cfg, store, logger, now = Date.now, WebSocket
       // model 不在这里补——上面已对全部存活 bot 扇出（R27②），changed 桶同样是幸存者
       if (Object.keys(patch).length > 0) deck.updateBot(id, patch)
     }
+
+    // R20：新加入/改房后的 bot 应用仍然有效的覆盖（改房的已在上面清掉）。
+    applyRoomOverrides({ deck, runtime, bots: nextCfg.bots })
 
     const report = {
       added: diff.added,

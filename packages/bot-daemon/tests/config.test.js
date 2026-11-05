@@ -104,6 +104,15 @@ describe('validateConfig：纯数据红线与字段校验', () => {
     expect(validateConfig(raw).ok).toBe(true)
   })
 
+  it('四个公共房（含 5/7/8 位）都能通过 room 形状校验', () => {
+    for (const room of ['setsubun', 'nebula', 'magenta', 'amber']) {
+      const raw = minimalRaw()
+      raw.bots[0].room = room
+      const r = validateConfig(raw)
+      expect(r.ok, room + ' 应被接受：' + JSON.stringify(r.errors)).toBe(true)
+    }
+  })
+
   it('serverUrl 缺省回填 wss://kuoluosaigai.com（§5）；显式 ws://localhost:8080 合法（本地联调）', () => {
     const dflt = validateConfig(minimalRaw())
     expect(dflt.ok).toBe(true)

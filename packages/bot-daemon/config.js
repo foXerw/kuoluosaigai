@@ -41,7 +41,8 @@ const DEFAULT_SERVER_URL = 'wss://kuoluosaigai.com'
 const SERVER_URL_RE = /^wss?:\/\//
 const HTTP_URL_RE = /^https?:\/\//
 const BOT_ID_RE = /^[a-z0-9-]{1,32}$/ // Q3：id 必填且稳定，改名=变更、增删 id=增删
-const ROOM_RE = /^[a-z0-9]{6}$/ // R15：仅形状
+// 私房固定 6 位；四个公共房是 5–8 位（amber/magenta/setsubun/nebula）。R15：仅形状。
+const ROOM_RE = /^[a-z0-9]{5,8}$/
 
 
 const TOP_KEYS = ['name', 'serverUrl', 'provider', 'limits', 'ownerNick', 'bots']
@@ -270,7 +271,7 @@ export function validateConfig(raw) {
       if (typeof b.name !== 'string' || b.name.trim() === '') errors.push(at + '.name: 必须是非空字符串')
       if (typeof b.persona !== 'string' || b.persona.trim() === '') errors.push(at + '.persona: 必须是非空字符串')
       if (typeof b.room !== 'string' || !ROOM_RE.test(b.room)) {
-        errors.push(at + '.room: 必须匹配 /^[a-z0-9]{6}$/（R15：仅形状校验；房间存在性归运行时 join-error 与 doctor 实测）')
+        errors.push(at + '.room: 必须匹配 /^[a-z0-9]{5,8}$/（R15：仅形状校验；私房 6 位、公共房 5–8 位；存在性归运行时 join-error 与 doctor 实测）')
       }
       // 可选数值字段：显式 undefined（如 process.env 未设）按未提供走缺省；给了就要合法。
       let chattiness = DEFAULT_CHATTINESS
