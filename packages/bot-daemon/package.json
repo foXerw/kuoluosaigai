@@ -19,6 +19,7 @@
     "cli.js",
     "config.js",
     "converge.js",
+    "device.js",
     "doctor.js",
     "host.js",
     "lock.js",
