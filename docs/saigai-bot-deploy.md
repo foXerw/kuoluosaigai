@@ -233,8 +233,10 @@ npm config set registry https://registry.npmmirror.com
 公司代理/防火墙可能拦截 WebSocket 升级；家里网络正常而公司异常时，优先怀疑 TLS
 中间人或 407 认证。`doctor` 会对 `serverUrl` 做 WS 可达性实测。
 
-**`status` 里 `deviceId` 是 `null`**
-P1 事实：设备令牌尚未铸造（P3 能力），不是故障。
+**`status` 里 `deviceId` 是 `null` 或 `设备链路：未配对`**
+`deviceId` 为 null 只可能出现在 boot 完成前；boot 后应由 `device.json` 派生。若链路长期
+`error/replaced/closed`，先看 `journalctl`；令牌被轮换/墓碑化后无法自愈的恢复方式：
+停 daemon → 删除数据目录的 `device.json` → 重启 → `saigai-bot pair` 重新配对。
 
 **容器里数据没了**
 检查 `./data` 是否真的挂到持久路径、uid 1000 是否可写；不要用容器临时层。

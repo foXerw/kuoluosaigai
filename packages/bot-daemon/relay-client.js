@@ -20,6 +20,12 @@ export function deviceUrl(base) {
 
 const noop = () => {}
 
+function typedError(code, message) {
+  const e = new Error(message)
+  e.code = code
+  return e
+}
+
 /**
  * @param {{
  *   url: string, token: string, name: string, ver?: string,
@@ -111,16 +117,22 @@ export function createRelayClient({
     if (!frame || typeof frame.t !== 'string') return
     switch (frame.t) {
       case 'dev-auth-ok':
-        retries = 0
+        retries = 0 // 认证成功才重置退避（TCP 通但被立刻关掉要继续退避）
         info = { deviceId: frame.deviceId || null, name: frame.name || name }
         paired = !!frame.paired
         setStatus(paired ? 'paired' : 'open')
+        if (paired) {
+          // 重连到已配对设备也要触发一次状态推送（与 pair-claim 的 paired 帧同路）。
+          try { onPaired({ deviceId: info.deviceId, restored: true }) } catch (e) { /* sink 免疫 */ }
+        }
         break
       case 'dev-auth-err':
         paired = false
         stopped = true
         setStatus('error')
         log('error', 'device auth rejected by relay')
+        settlePair(typedError('auth', 'device auth rejected'))
+        settleRotate(typedError('auth', 'device auth rejected'))
         if (ws) {
           try { ws.close() } catch (e) { /* noop */ }
         }
@@ -154,8 +166,8 @@ export function createRelayClient({
         stopped = true
         setStatus('replaced')
         log('warn', 'another daemon replaced this device connection')
-        settlePair(new Error('replaced'))
-        settleRotate(new Error('replaced'))
+        settlePair(typedError('replaced', 'replaced by another daemon'))
+        settleRotate(typedError('replaced', 'replaced by another daemon'))
         if (ws) {
           try { ws.close() } catch (e) { /* noop */ }
         }
@@ -163,13 +175,15 @@ export function createRelayClient({
       case 'dev-revoke-ok':
         if (pendingRotate) {
           currentToken = pendingRotate.token
+          info = { ...info, deviceId: frame.deviceId || info.deviceId }
           paired = true
           setStatus('paired')
           settleRotate(null, { deviceId: frame.deviceId })
         }
         break
       case 'dev-revoke-err':
-        settleRotate(new Error('revoke rejected'))
+        // 服务端明确拒绝（未提交）；与超时/断线区分，宿主只在 rejected 时回滚本地令牌。
+        settleRotate(typedError('rejected', 'revoke rejected by relay'))
         break
       case 'rate':
         log('warn', 'relay rate limited')
@@ -205,10 +219,10 @@ export function createRelayClient({
     }
     ws = sock
     sock.onopen = () => {
-      retries = 0
       send({ t: 'dev-auth', role: 'daemon', token: currentToken, name, ver })
     }
     sock.onmessage = (ev) => {
+      if (stopped) return // 排队中的旧帧不能打到已停止/被接管的宿主
       let frame
       try {
         frame = JSON.parse(ev.data)
@@ -221,6 +235,8 @@ export function createRelayClient({
       if (ws !== sock) return
       ws = null
       paired = false
+      settlePair(typedError('closed', 'connection lost'))
+      settleRotate(typedError('closed', 'connection lost'))
       if (!started || stopped) return
       setStatus('closed')
       scheduleReconnect()
@@ -244,8 +260,8 @@ export function createRelayClient({
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
-      settlePair(new Error('stopped'))
-      settleRotate(new Error('stopped'))
+      settlePair(typedError('closed', 'stopped'))
+      settleRotate(typedError('closed', 'stopped'))
       if (ws) {
         try { ws.close() } catch (e) { /* noop */ }
       }
@@ -276,7 +292,7 @@ export function createRelayClient({
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           if (pendingPair && pendingPair.timer === timer) pendingPair = null
-          reject(new Error('pair timeout'))
+          reject(typedError('timeout', 'pair timeout'))
         }, timeoutMs)
         pendingPair = { resolve, reject, timer }
       })
@@ -291,7 +307,7 @@ export function createRelayClient({
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           if (pendingRotate && pendingRotate.timer === timer) pendingRotate = null
-          reject(new Error('revoke timeout'))
+          reject(typedError('timeout', 'revoke timeout'))
         }, timeoutMs)
         pendingRotate = { resolve, reject, timer, token: newToken }
       })

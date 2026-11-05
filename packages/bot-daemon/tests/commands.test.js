@@ -12,6 +12,7 @@ function fakeDeck() {
     bots: [bot],
     lifetime: { 'bot-a': { promptTokens: 10, completionTokens: 20 } },
     calls,
+    persist: vi.fn(() => { calls.push(['persist']) }),
     addBot: vi.fn((cfg) => { calls.push(['add', cfg]); return { ok: true } }),
     updateBot: vi.fn((id, patch) => { calls.push(['update', id, patch]); return { ok: true } }),
     removeBot: vi.fn((id) => { calls.push(['remove', id]) }),
@@ -59,10 +60,13 @@ describe('createCommandHandler', () => {
     expect(deck.startBot).toHaveBeenCalledWith('bot-a')
     expect(handler.handle({ cmd: 'bot.stop', args: { id: 'bot-a' } })).toEqual({ ok: true, err: null })
     expect(handler.handle({ cmd: 'buffer.clear', args: { id: 'bot-a' } })).toEqual({ ok: true, err: null })
+    const beforeRemove = deck.calls.length
     expect(handler.handle({ cmd: 'bot.remove', args: { id: 'bot-a' } })).toEqual({ ok: true, err: null })
     expect(deck.stopBot).toHaveBeenCalledWith('bot-a')
     expect(deck.removeBot).toHaveBeenCalledWith('bot-a')
     expect(deck.clearBotBuffer).toHaveBeenCalledWith('bot-a')
+    // lifetime 冲刷必须先于 removeBot（core 有 10s 节流）：只看 remove 这一段调用序
+    expect(deck.calls.slice(beforeRemove).map((c) => c[0])).toEqual(['persist', 'stop', 'remove'])
   })
 
   it('bot.add 用配置 model/provider，且不接受 apiKey', () => {
@@ -79,6 +83,9 @@ describe('createCommandHandler', () => {
       .toEqual({ ok: false, err: 'bad args' })
     expect(handler.handle({ cmd: 'bot.add', args: { id: 'x', name: 'n', persona: 'p', room: 'nebula', nested: { apiKey: 'sk-x' } } }))
       .toEqual({ ok: false, err: 'bad args' })
+    // 重复 id：core addBot 不去重，命令层必须先拒
+    expect(handler.handle({ cmd: 'bot.add', args: { id: 'bot-a', name: '另一个', persona: 'p', room: 'nebula' } }))
+      .toEqual({ ok: false, err: 'exists' })
   })
 
   it('bot.update 只允许定义字段；apiKey/未知字段拒绝', () => {

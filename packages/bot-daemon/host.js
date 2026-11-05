@@ -69,23 +69,38 @@ import { createCommandHandler as createCommandHandlerImpl, buildDevState } from 
 export function applyRoomOverrides({ deck, runtime, bots }) {
   const applied = []
   const cleared = []
-  if (!deck || !runtime) return { applied, cleared }
+  const errors = []
+  if (!deck || !runtime) return { applied, cleared, errors }
   for (const bot of bots || []) {
-    const o = runtime.getRoomOverride(bot.id)
+    let o
+    try {
+      o = runtime.getRoomOverride(bot.id)
+    } catch (e) {
+      errors.push(bot.id) // runtime 读失败：保留配置房，绝不因此中断 boot/converge
+      continue
+    }
     if (!o) continue
     if (o.baseRoom !== bot.room) {
-      runtime.clearRoomOverride(bot.id)
-      cleared.push(bot.id)
+      try {
+        runtime.clearRoomOverride(bot.id)
+        cleared.push(bot.id)
+      } catch (e) {
+        errors.push(bot.id)
+      }
       continue
     }
     const item = deck.bots.find((b) => b.id === bot.id)
     if (!item) continue
     const effective = item.rt.roomId || item.roomId
     if (effective === o.room) continue
-    deck.switchBotRoom(bot.id, o.room)
-    applied.push(bot.id)
+    try {
+      deck.switchBotRoom(bot.id, o.room)
+      applied.push(bot.id)
+    } catch (e) {
+      errors.push(bot.id)
+    }
   }
-  return { applied, cleared }
+  return { applied, cleared, errors }
 }
 
 // provider 的 deck 侧稳定 id：显式 id 寻址（Q3 同款原则），重启 load 回来的是同一条目，
@@ -271,8 +286,12 @@ export function createDaemonHost({
       link.setToken(next.token)
       return await link.rotate(next.token)
     } catch (e) {
-      identity.setToken(oldToken) // 服务端拒绝/超时：本地也回滚，不能分叉
-      link.setToken(oldToken)
+      // 只有服务端**明确拒绝**（新令牌未落盘）才回滚。超时/断线时服务端可能已经提交，
+      // 把旧令牌写回去会撞墓碑、让链路永久 401；此时保留新令牌，让重连去收敛。
+      if (e && e.code === 'rejected') {
+        identity.setToken(oldToken)
+        link.setToken(oldToken)
+      }
       throw e
     }
   }
@@ -334,6 +353,9 @@ export function createDaemonHost({
     if (roomsApplied.cleared.length) {
       safeLog('warn', 'R20 房间覆盖：配置房已变更，清除旧覆盖 ' + roomsApplied.cleared.join(', '), { bots: roomsApplied.cleared })
     }
+    if (roomsApplied.errors.length) {
+      safeLog('warn', 'R20 房间覆盖：读取/写入失败，按配置房继续 ' + roomsApplied.errors.join(', '), { bots: roomsApplied.errors })
+    }
 
     // 逐个启动——与 deck 构造同一动作序列（见文件头「一体化」）。
     for (const id of startable) {
@@ -349,9 +371,7 @@ export function createDaemonHost({
         name: current.name,
         WebSocketImpl,
         onCommand: (frame) => commandHandler.handle(frame),
-        onStatus: (s) => {
-          if (s === 'paired' || s === 'open') pushState()
-        },
+        onStatus: () => {}, // 状态推送只走 onPaired（pair-claim 与重连两条路都会触发）
         onPaired: () => pushState(),
         logger: {
           info: (m) => safeLog('info', m),
@@ -360,7 +380,13 @@ export function createDaemonHost({
         },
       })
       link.start()
-      statePushTimer = setInterval(() => pushState(), statePushMs)
+      statePushTimer = setInterval(() => {
+        try {
+          pushState()
+        } catch (e) {
+          safeLog('warn', 'dev-state 周期推送失败（snapshot 或序列化异常），下一拍重试')
+        }
+      }, statePushMs)
       if (typeof statePushTimer.unref === 'function') statePushTimer.unref()
     }
   }
@@ -435,7 +461,10 @@ export function createDaemonHost({
     }
 
     // R20：新加入/改房后的 bot 应用仍然有效的覆盖（改房的已在上面清掉）。
-    applyRoomOverrides({ deck, runtime, bots: nextCfg.bots })
+    const roomsNext = applyRoomOverrides({ deck, runtime, bots: nextCfg.bots })
+    if (roomsNext.errors.length) {
+      safeLog('warn', 'R20 房间覆盖：热重载时读写失败，按配置房继续 ' + roomsNext.errors.join(', '), { bots: roomsNext.errors })
+    }
 
     const report = {
       added: diff.added,

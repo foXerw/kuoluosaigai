@@ -45,7 +45,10 @@ function clone(v) {
   return v ? { ...v } : null
 }
 
-export function createRuntimeStore({ file }) {
+export function createRuntimeStore({
+  file,
+  writeFileImpl = (tmp, text) => fs.writeFileSync(tmp, text), // 测试注入：模拟写失败
+}) {
   const doc = readDoc(file)
 
   function persist() {
@@ -53,7 +56,7 @@ export function createRuntimeStore({ file }) {
     const tmp = file + '.tmp'
     let moved = false
     try {
-      fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n')
+      writeFileImpl(tmp, JSON.stringify(doc, null, 2) + '\n')
       fs.renameSync(tmp, file)
       moved = true
     } finally {
@@ -81,14 +84,28 @@ export function createRuntimeStore({ file }) {
       if (typeof id !== 'string' || !ID_RE.test(id)) throw new TypeError('runtime: invalid bot id')
       if (typeof room !== 'string' || !ROOM_RE.test(room)) return false
       if (!validBase(baseRoom)) return false
+      const had = Object.prototype.hasOwnProperty.call(doc.rooms, id)
+      const prev = doc.rooms[id]
       doc.rooms[id] = { room, baseRoom: baseRoom ?? null }
-      persist()
+      try {
+        persist()
+      } catch (e) {
+        if (had) doc.rooms[id] = prev
+        else delete doc.rooms[id]
+        throw e
+      }
       return true
     },
     clearRoomOverride(id) {
       if (typeof id !== 'string' || !Object.prototype.hasOwnProperty.call(doc.rooms, id)) return false
+      const prev = doc.rooms[id]
       delete doc.rooms[id]
-      persist()
+      try {
+        persist()
+      } catch (e) {
+        doc.rooms[id] = prev
+        throw e
+      }
       return true
     },
   }

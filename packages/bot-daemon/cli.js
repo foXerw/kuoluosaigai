@@ -11,7 +11,7 @@
 // ③ acquireLock —— A5：绝不静默、绝不双跑；被占退 3（**不建任何后续部件**）
 // ④ createFileStateStore + createDaemonHost —— 锁没到手之前不碰盘上任何部件（顺序③先于此）
 // ⑤ host.boot() —— deck 构造与 startBot 同一动作（Task 7 一体化），失败释放锁退 1
-// ⑤.5 startControlServer（Task 10/Q12）—— boot 成功后才起 127.0.0.1 只读控制口、落
+// ⑤.5 startControlServer（Task 10/Q12 + P3b）—— boot 成功后才起 127.0.0.1 回环控制口、落
 //     rpc.json{port,secret,pid,startedAt}。起不来只**大声 FAIL 不拦 daemon**：bot 面是业务、
 //     观测面是仪表盘，仪表盘炸不许把车停下（A5 的「不静默」由 printErr 兑现）。`--once`
 //     整步跳过——那条路的承诺是「不留任何句柄」，字面成立。
@@ -38,8 +38,8 @@
 //
 // —— A1/A3 与 §8.2 排除项 ——
 // 任何 print/logger 调用都不带 apiKey（validateConfig 的 errors 已证不回显值）；
-// 用法文本只讲 run/validate/doctor/status（status 是 P1 已实现能力，Task 10）——
-// pair/revoke 是 P3 能力，**连提都不提**（§8.2 的理由：不在文档里承诺未实现的东西）。
+// 用法文本：run/validate/doctor/status + P3b 的 pair/revoke --all。pair/revoke 只经回环
+// rpc 触发，输出只有配对码/deviceId，绝不打印设备令牌。
 //
 // —— status（Task 10/Q12）：CLI 侧只剩用法与出口，查询/渲染真身在 rpc.js 的 runStatus ——
 // 读 rpc.json → 带 secret 对 127.0.0.1 发**一次** GET /status（AbortController 限时自断，

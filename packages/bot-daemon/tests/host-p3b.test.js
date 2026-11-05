@@ -109,13 +109,24 @@ describe('host P3b 设备链路', () => {
     expect(identity.setToken).not.toHaveBeenCalled()
   })
 
-  it('revoke 失败：本地 token 回滚，不留下服务端/本地分叉', async () => {
+  it('revoke 被服务端明确拒绝：本地 token 回滚', async () => {
     makeHost()
     await host.boot()
-    link.rotate.mockRejectedValueOnce(new Error('revoke rejected'))
+    const err = Object.assign(new Error('revoke rejected'), { code: 'rejected' })
+    link.rotate.mockRejectedValueOnce(err)
     await expect(host.revokeAll()).rejects.toThrow(/revoke/)
     expect(identity.setToken).toHaveBeenCalledWith(T1)
     expect(link.setToken).toHaveBeenLastCalledWith(T1)
+  })
+
+  it('revoke 超时（结果不确定）：保留新 token，不回滚到可能已被墓碑化的旧 token', async () => {
+    makeHost()
+    await host.boot()
+    const err = Object.assign(new Error('revoke timeout'), { code: 'timeout' })
+    link.rotate.mockRejectedValueOnce(err)
+    await expect(host.revokeAll()).rejects.toThrow(/timeout/)
+    expect(identity.setToken).not.toHaveBeenCalled()
+    expect(link.setToken).toHaveBeenLastCalledWith(T2)
   })
 
   it('shutdown 停 link', async () => {
@@ -124,5 +135,51 @@ describe('host P3b 设备链路', () => {
     host.shutdown()
     expect(link.stop).toHaveBeenCalledTimes(1)
     host = null
+  })
+
+  it('dev-state 周期推送；shutdown 后定时器不再触发', async () => {
+    vi.useFakeTimers()
+    try {
+      makeHost({ statePushMs: 1000 })
+      await host.boot()
+      link.paired.mockReturnValue(true)
+      const before = link.pushState.mock.calls.length
+      await vi.advanceTimersByTimeAsync(1000)
+      const during = link.pushState.mock.calls.length
+      expect(during).toBeGreaterThan(before)
+      host.shutdown()
+      host = null
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(link.pushState.mock.calls.length).toBe(during)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('onCommand 接到 deck：bot.stop 真停 runner', async () => {
+    const stop = vi.fn()
+    makeHost({
+      createRunner: () => ({ ...fakeRunner(), stop }),
+    })
+    await host.boot()
+    captured.onCommand({ id: 'c1', cmd: 'bot.stop', args: { id: 'lixiao' } })
+    expect(stop).toHaveBeenCalled()
+  })
+
+  it('R20 启动恢复覆盖；配置改房后覆盖清除', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'runtime.json'),
+      JSON.stringify({ version: 1, rooms: { lixiao: { room: 'amber', baseRoom: 'nebula' } } }),
+    )
+    makeHost()
+    await host.boot()
+    expect(host.snapshot().bots.find((b) => b.id === 'lixiao').room).toBe('amber')
+
+    await host.converge({
+      ...cfg,
+      bots: [{ ...cfg.bots[0], room: 'magenta' }],
+    })
+    expect(host.snapshot().bots.find((b) => b.id === 'lixiao').room).toBe('magenta')
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8')).rooms).toEqual({})
   })
 })

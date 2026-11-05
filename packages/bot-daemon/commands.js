@@ -128,6 +128,7 @@ export function createCommandHandler({ deck, runtime, getConfig }) {
           if (!validId(id) || typeof botName !== 'string' || !botName || botName.length > 12 || !validRoom(room)) {
             return fail('bad args')
           }
+          if (findBot(id)) return fail('exists') // core addBot 不去重，重复 id 会毁 runner/lifetime 键
           const cfg = getConfig()
           const cfg0 = {
             id,
@@ -175,6 +176,9 @@ export function createCommandHandler({ deck, runtime, getConfig }) {
         case 'bot.remove': {
           if (!validId(a.id)) return fail('bad args')
           if (!findBot(a.id)) return fail('not found')
+          // 与 host 的删除同序：先冲刷 lifetime（core 有 10s 节流），再 stop/remove，
+          // 否则节流窗内的 token 账会在 removeBot 删 lifetime[id] 时蒸发。
+          deck.persist()
           deck.stopBot(a.id)
           deck.removeBot(a.id)
           return ok()

@@ -44,6 +44,20 @@ describe('createRuntimeStore（R20 房间覆盖）', () => {
     expect(createRuntimeStore({ file }).list()).toEqual({})
   })
 
+  it('写失败：set/clear 内存回滚，与磁盘不分叉', () => {
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      rooms: { 'bot-a': { room: 'amber', baseRoom: 'nebula' } },
+    }))
+    const failing = createRuntimeStore({ file, writeFileImpl: () => { throw new Error('EIO') } })
+    expect(() => failing.setRoomOverride('bot-a', { room: 'magenta', baseRoom: 'nebula' })).toThrow(/EIO/)
+    expect(failing.getRoomOverride('bot-a')).toEqual({ room: 'amber', baseRoom: 'nebula' })
+
+    expect(() => failing.clearRoomOverride('bot-a')).toThrow(/EIO/)
+    expect(failing.getRoomOverride('bot-a')).toEqual({ room: 'amber', baseRoom: 'nebula' })
+    expect(createRuntimeStore({ file }).getRoomOverride('bot-a')).toEqual({ room: 'amber', baseRoom: 'nebula' })
+  })
+
   it('读入时清洗非法条目', () => {
     fs.writeFileSync(file, JSON.stringify({
       version: 1,

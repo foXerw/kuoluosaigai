@@ -1,4 +1,4 @@
-// Task 10：本地控制面——rpc.json + 127.0.0.1 只读 status 服务（裁定 Q12）。
+// Task 10 / P3b：本地控制面——rpc.json + 127.0.0.1 回环服务（裁定 Q12）。
 //
 // —— 为什么是「回环 HTTP + rpc.json{port,secret}」而不是 unix socket ——
 // §8.5 承诺 Linux + Windows 双平台，而 unix socket 是排他的（Windows 形态不同/不可依赖）。
@@ -15,10 +15,11 @@
 // 与 rpc.json 一致的 secret（≥16 随机字节 hex）。status 的帮助文本里也原话说这条，
 // 别让任何人把「600」当护栏。
 //
-// —— A3 在本文件的落点：只有一个只读端点，别的都不存在 ——
-// GET /status → snapshot() JSON。此外：未知路径 404、非 GET 405、超限 body 413——
-// 全部**不回显请求内容**（响应体是常量字面量），全部**不调用** snapshot provider。
-// 没有指令通道、没有 URL 参数、没有任何可被拿来当 SSRF 跳板/放大器的形状。
+// —— A3 在本文件的落点：固定端点，没有任意指令/URL ——
+// GET /status → snapshot() JSON；P3b 增加 POST /pair、POST /revoke（触发 host 的
+// pair/revokeAll，只回固定形状 {code,expiresMs} / {deviceId}）。此外：未知路径 404、
+// 方法不符 405、超限 body 413——全部**不回显请求内容**（响应体是常量字面量）。
+// 没有任意命令通道、没有 URL 参数、没有可当 SSRF 跳板/放大器的形状。
 //
 // —— A1 零 key 材料 ——
 // 本模块只搬运 Task 7 `host.snapshot()` 的产物——它已是白名单拼装的（providers 整个
@@ -383,7 +384,8 @@ function statusRender(o, snap, dataDir) {
   } else {
     print('数据为 ' + ageSec + ' 秒前（Q12 新鲜度口径：≤5s 视为新鲜）')
   }
-  print('deviceId：' + (meta.deviceId === null || meta.deviceId === undefined ? 'null（P1 事实：设备令牌尚未铸造，非配对遗漏；字段在场≠已接线，R30）' : String(meta.deviceId)))
+  print('deviceId：' + (meta.deviceId === null || meta.deviceId === undefined ? 'null（尚未 boot/铸造设备令牌）' : String(meta.deviceId)))
+  print('设备链路：' + (meta.paired ? '已配对' : '未配对') + ' · ' + (typeof meta.linkStatus === 'string' ? meta.linkStatus : '未接线'))
   print('进程运行时长：' + (Number.isFinite(meta.uptimeMs) ? Math.floor(meta.uptimeMs / 1000) + ' 秒' : '未知'))
   print('全局小时闸：' + (meta.globalHourCount === null || meta.globalHourCount === undefined ? '未配置（未安装≠未消耗，别读成 0）' : meta.globalHourCount + ' 条/已用（本小时）'))
   print('restartRequired：' + (meta.restartRequired ? '有——见顶部 !! 横幅' : '无待进程重启的变更'))
@@ -474,7 +476,10 @@ export async function callControl({
     } catch (e) {
       return { ok: false, reason: e && e.name === 'AbortError' ? 'timeout' : 'network' }
     }
-    if (!res.ok) return { ok: false, reason: 'status ' + res.status }
+    if (!res.ok) {
+      try { await res.text() } catch (e) { /* 排空，避免 keep-alive 悬挂 */ }
+      return { ok: false, reason: 'status ' + res.status }
+    }
     let body
     try {
       body = JSON.parse(await res.text())

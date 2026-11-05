@@ -218,10 +218,11 @@ rhythm 门禁与掷骰。这是设计方向（「宁显得没睡醒，不可烧�
 `systemctl stop saigai-bot` → 删除 `state.json`（等价 removeItem：身份与账目一并抹除）
 或换一个新的 `--data-dir` → 再 start。`status` 输出的孤儿清单也写着同一条路径。
 
-### 6.8 `meta.deviceId` 在 P1 恒为 `null`（裁定 R30）
-字段在场是为 P3 预留的形状；配对/设备令牌（os.hostname 冒名会被否掉的理由见 host.js
-注释）什么都没接。`status` 会明说「null（P1 事实：设备令牌尚未铸造）」。人类可读的
-名字看配置里的 `name`（Q11/Q4 口径）。
+### 6.8 `meta.deviceId` 由本地设备令牌派生（P3b / R30）
+boot 时从数据目录 `device.json` 读取/铸造 64 hex 设备令牌，`deviceId =
+sha256(token)[:16]`；boot 前快照里是 `null`。人类可读名字看配置 `name`（Q11/Q4）。
+`device.json` 丢失会重新铸造（等于旧配对全部作废，重新 `saigai-bot pair` 即可）；
+换机/重置后 `status` 的 `paired`/`linkStatus` 会显示链路是否真的连上。
 
 ### 6.9 `rpc.json` 的 0600 不是防线；回环 + secret 才是
 `fs.chmodSync(rpc.json, 0o600)` 在 Windows 上是**尽力而为**（POSIX 位与 ACL 模型不合，
@@ -229,7 +230,8 @@ rhythm 门禁与掷骰。这是设计方向（「宁显得没睡醒，不可烧�
 服务**只绑 127.0.0.1**（其余 host 直接 TypeError，rpc.js `LOOPBACK_HOSTS`——`localhost`
 这个名字都不信，防 hosts 文件劫持）；每个请求必须带与 rpc.json 一致的 **secret**
 （≥16 随机字节 hex，SHA-256 摘要 + timingSafeEqual 等时比较；缺与错共用同一 401 体）。
-控制面只有一个只读 `GET /status`，没有指令通道。所以在 Windows 上开发机跑 daemon：
+控制面：`GET /status` 只读快照；P3b 增加 `POST /pair`、`POST /revoke`（同样只绑回环、
+同样要求 secret，由 `saigai-bot pair` / `revoke --all` 调用）。所以在 Windows 上开发机跑 daemon：
 rpc.json 权限位难看对也别慌，去看 §6.10……它只影响谁能读门牌，不影响谁能读 status。
 
 ### 6.10 status 的新鲜度与失败分型（Q12）
@@ -289,8 +291,10 @@ sudo systemctl restart saigai-bot  # 让 §6.5 的粘滞位落地；也解决 §
 注释与格式都是你的（Q2）。调试/CI 想跑一轮就退：`saigai-bot run --once`
 （零残留句柄；`--once` 下控制面不启动，status 自然查不到它）。
 
-## 8. P1 边界（别在这里找还没造的东西）
+## 8. 边界（P3b 现状）
 
-`pair`/`revoke` 不存在（P3）；设备身份未接（§6.8）；浏览器侧才有的本地 key 语义在
-daemon 侧被落盘剥离取代（§3）；`limits` 未配置 = 不装刹车（合法，config.js/host.js
-的「不传 schedule 键」语义）。unit 与本文档随包发布（package.json `files` 含 `deploy/`）。
+`pair` / `revoke --all` 已存在，且只对**正在运行**的 daemon 生效（回环 rpc，§6.9）；
+设备身份与 `/device` 链路已接（§6.8）。浏览器远端 deck 面板（P3c）尚未上线。浏览器侧
+才有的本地 key 语义在 daemon 侧被落盘剥离取代（§3）；`limits` 未配置 = 不装刹车（合法，
+config.js/host.js 的「不传 schedule 键」语义）。unit 与本文档随包发布
+（package.json `files` 逐项列出四份 deploy 材料）。
