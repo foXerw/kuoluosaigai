@@ -56,6 +56,9 @@ import path from 'node:path'
 import { createDeck, createNullLease } from 'kuoluosaigai-bot-core'
 import { diffConfigs, changedBotFields } from './converge.js'
 import { createRuntimeStore as createRuntimeStoreImpl, RUNTIME_FILE_NAME } from './runtime.js'
+import { createDeviceIdentity as createDeviceIdentityImpl } from './device.js'
+import { createRelayClient as createRelayClientImpl } from './relay-client.js'
+import { createCommandHandler as createCommandHandlerImpl, buildDevState } from './commands.js'
 
 /**
  * R20：把 runtime.json 的房间覆盖应用到 deck。
@@ -157,6 +160,11 @@ export function createDaemonHost({
   sleep,
   createRunner,
   createRuntime = createRuntimeStoreImpl, // 测试接缝
+  createIdentity = createDeviceIdentityImpl,
+  createLink = createRelayClientImpl,
+  createHandler = createCommandHandlerImpl,
+  enableLink = true,
+  statePushMs = 15000,
 } = {}) {
   if (!cfg || !store) throw new TypeError('createDaemonHost: cfg 与 store 必填')
   const log = logger || { info() {}, warn() {}, error() {} }
@@ -164,6 +172,10 @@ export function createDaemonHost({
   let current = cfg
   let deck = null
   let runtime = null
+  let identity = null
+  let link = null
+  let commandHandler = null
+  let statePushTimer = null
   let bootedAt = null
   // R27 捆绑②（R26「不可能看漏」的完成条件）：需要**进程重启**才能兑现的变化是粘滞位，
   // converge 置位、snapshot 常驻上报；只有换新 host（进程重启语义）才回 false。
@@ -173,7 +185,7 @@ export function createDaemonHost({
   // 归 P3），又会在 status 里让操作者误信它就是 deviceId，还会把机器标识带进 P3 的
   // dev-state 帧流出本机。键位保留（R29：Task 10 原样渲染 meta、P3 需要字段在场），
   // 人类可读标签本就有 meta.name（配置 name）。
-  const deviceId = null
+  let deviceId = null // P3b：boot 时由 device.json 令牌派生；boot 前 null
 
   // —— 日志：一切经 safeLog ——
   function safeLog(level, msg, fields) {
@@ -237,9 +249,40 @@ export function createDaemonHost({
     return createDeck(opts)
   }
 
+  function pushState() {
+    if (!link || !deck || !link.paired()) return false
+    const provider = current.provider || {}
+    return link.pushState(buildDevState({
+      snapshot: snapshot(),
+      provider: { ...provider, apiKey: resolveApiKey(provider) },
+    }))
+  }
+
+  async function pair() {
+    if (!link) throw new Error('device link unavailable')
+    return link.requestPair()
+  }
+
+  async function revokeAll() {
+    if (!link || !identity) throw new Error('device link unavailable')
+    const oldToken = identity.token()
+    const next = identity.rotate() // 先落盘新令牌；失败会自行回滚
+    try {
+      link.setToken(next.token)
+      return await link.rotate(next.token)
+    } catch (e) {
+      identity.setToken(oldToken) // 服务端拒绝/超时：本地也回滚，不能分叉
+      link.setToken(oldToken)
+      throw e
+    }
+  }
+
   async function boot() {
     if (deck) throw new Error('daemon host：boot() 每生命周期只调一次（重启进程请重建 host）')
     bootedAt = now()
+    // P3b：设备身份与 state.json 同目录；store 非文件态（测试替身）时不铸造。
+    identity = typeof store.path === 'string' ? createIdentity({ dir: path.dirname(store.path) }) : null
+    deviceId = identity ? identity.deviceId() : null
     // 一体化：deck 在此刻才构造（startedAt 锚点），启动在紧随其后的同一动作序列里。
     deck = buildDeck()
     deck.load() // brief 顺序：先 load 再调和（构造期 loadInto 已读盘，本调用是显式确认，幂等）
@@ -295,6 +338,30 @@ export function createDaemonHost({
     // 逐个启动——与 deck 构造同一动作序列（见文件头「一体化」）。
     for (const id of startable) {
       await deck.startBot(id)
+    }
+
+    // P3b：设备通道客户端。enableLink=false 是主机单测接缝；生产 CLI 不传（默认开）。
+    if (enableLink && identity) {
+      commandHandler = createHandler({ deck, runtime, getConfig: () => current })
+      link = createLink({
+        url: current.serverUrl,
+        token: identity.token(),
+        name: current.name,
+        WebSocketImpl,
+        onCommand: (frame) => commandHandler.handle(frame),
+        onStatus: (s) => {
+          if (s === 'paired' || s === 'open') pushState()
+        },
+        onPaired: () => pushState(),
+        logger: {
+          info: (m) => safeLog('info', m),
+          warn: (m) => safeLog('warn', m),
+          error: (m) => safeLog('error', m),
+        },
+      })
+      link.start()
+      statePushTimer = setInterval(() => pushState(), statePushMs)
+      if (typeof statePushTimer.unref === 'function') statePushTimer.unref()
     }
   }
 
@@ -442,15 +509,26 @@ export function createDaemonHost({
         // R27 捆绑②/R26：pending 进程重启的粘滞位——Task 10 的 status 唯一能看见它的面。
         // converge 置位后不会被后续 converge 洗掉，只随新 host（进程重启语义）归零。
         restartRequired: pendingRestart,
+        // P3b：设备链路状态（配对 UI 与 status 消费；未接线时 false/null）
+        paired: link ? link.paired() : false,
+        linkStatus: link ? link.status() : null,
       },
       bots,
     }
   }
 
   function shutdown() {
+    if (statePushTimer) {
+      clearInterval(statePushTimer)
+      statePushTimer = null
+    }
+    if (link) {
+      link.stop()
+      link = null
+    }
     if (!deck) return
     deck.dispose() // 停全部 runner、释放租约、冲刷 lifetime（B12）；幂等
   }
 
-  return { boot, converge, snapshot, shutdown }
+  return { boot, converge, snapshot, shutdown, pair, revokeAll }
 }

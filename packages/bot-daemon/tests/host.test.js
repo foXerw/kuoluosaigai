@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 
 import { SCHEMA_VERSION } from 'kuoluosaigai-bot-core'
 import { createFileStateStore } from '../state.js'
@@ -149,7 +150,10 @@ function setup(cfg, extra) {
           calls.runners[o.bot.id] = r
           return r
         }
-  const host = createDaemonHost({ cfg, store, logger: log, now, WebSocketImpl, sleep, createRunner })
+  const host = createDaemonHost({
+    cfg, store, logger: log, now, WebSocketImpl, sleep, createRunner,
+    enableLink: false, // P3b 之前的主机单测不接设备 WS；P3b 用专门的假 link 用例
+  })
   startedHosts.push(host)
   return { host, store, dir, log, calls, WebSocketImpl, sleep, writes }
 }
@@ -573,15 +577,20 @@ describe('converge：热重载调和（A4：不变的 bot 不掉线）', () => {
 })
 
 describe('snapshot 与观测汇（Task 1 的端口在此接线）', () => {
-  it('R30：meta.deviceId 键位恒在但 P1 恒为 null——主机名不是设备身份（Q4 的本地令牌铸造归 P3），boot 前后都是 null', async () => {
+  it('R30/P3：boot 前 deviceId null；boot 后由本地设备令牌派生（不是主机名）', async () => {
     const ctx = setup(validCfg())
     const before = ctx.host.snapshot()
-    expect('deviceId' in before.meta).toBe(true) // R29：键位保留，Task 10 原样渲染
+    expect('deviceId' in before.meta).toBe(true)
     expect(before.meta.deviceId).toBe(null)
     await ctx.host.boot()
     const after = ctx.host.snapshot()
     expect('deviceId' in after.meta).toBe(true)
-    expect(after.meta.deviceId).toBe(null) // 不得是 os.hostname()——冒名身份会让 status 撒谎，且属机器标识外泄面
+    expect(after.meta.deviceId).toMatch(/^[a-f0-9]{16}$/)
+    const doc = JSON.parse(fs.readFileSync(path.join(ctx.dir, 'device.json'), 'utf8'))
+    expect(after.meta.deviceId).toBe(
+      crypto.createHash('sha256').update(doc.token).digest('hex').slice(0, 16),
+    )
+    expect(after.meta.deviceId).not.toContain(os.hostname())
   })
 
   it('snapshot 不含 apiKey 任何子串', async () => {
@@ -594,11 +603,11 @@ describe('snapshot 与观测汇（Task 1 的端口在此接线）', () => {
     expect(s).not.toContain(SECRET.slice(0, 10))
     expect(s).not.toContain(SECRET.slice(-10))
     expect(s).not.toContain('apiKey')
-    // 形状钉住（Task 10/P3 消费面）：每 bot 八字段 + meta 六键（R28 摘要已按实现改齐）
+    // 形状钉住（Task 10/P3 消费面）：每 bot 八字段 + meta 八键（P3b 增 paired/linkStatus）
     const lixiao = ctx.host.snapshot().bots.find((b) => b.id === 'lixiao')
     expect(Object.keys(lixiao).sort()).toEqual(['hourCount', 'id', 'lifetime', 'name', 'nick', 'room', 'session', 'status'])
     expect(lixiao.session).toEqual({ promptTokens: 0, completionTokens: 0, messages: 0 })
-    expect(['deviceId', 'name', 'uptimeMs', 'globalHourCount', 'generatedAt', 'restartRequired']).toEqual(
+    expect(['deviceId', 'name', 'uptimeMs', 'globalHourCount', 'generatedAt', 'restartRequired', 'paired', 'linkStatus']).toEqual(
       expect.arrayContaining(Object.keys(ctx.host.snapshot().meta)),
     )
     expect(ctx.host.snapshot().meta.restartRequired).toBe(false)
