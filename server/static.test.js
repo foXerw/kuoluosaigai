@@ -35,7 +35,12 @@ describe('static serving', () => {
         res.setEncoding('utf8')
         res.on('data', (d) => (body += d))
         res.on('end', () =>
-          resolve({ status: res.statusCode, type: res.headers['content-type'], body }),
+          resolve({
+            status: res.statusCode,
+            type: res.headers['content-type'],
+            cache: res.headers['cache-control'],
+            body,
+          }),
         )
       })
       req.on('error', reject)
@@ -46,6 +51,14 @@ describe('static serving', () => {
     const r = await get('/')
     expect(r.status).toBe(200)
     expect(r.type).toContain('text/html')
+    expect(r.cache).toBe('no-cache') // 发版后不得缓存旧壳
+    expect(r.body).toContain('MARK-XYZ')
+  })
+
+  it('SPA 回退同样 no-cache（未知路径拿到的还是 index.html）', async () => {
+    const r = await get('/rooms/abcdef')
+    expect(r.type).toContain('text/html')
+    expect(r.cache).toBe('no-cache')
     expect(r.body).toContain('MARK-XYZ')
   })
 

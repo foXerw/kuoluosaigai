@@ -32,6 +32,16 @@ describe('genRoomId', () => {
   it('uses the injected rng over the char table (0 → aaaaaa)', () => {
     expect(genRoomId(() => 0)).toBe('aaaaaa')
   })
+
+  it('默认随机源不依赖 Math.random（Math.random 被替换也能继续发号）', () => {
+    const original = Math.random
+    Math.random = () => { throw new Error('Math.random must not be used') }
+    try {
+      expect(genRoomId()).toMatch(/^[a-z0-9]{6}$/)
+    } finally {
+      Math.random = original
+    }
+  })
 })
 
 describe('createRegistry', () => {

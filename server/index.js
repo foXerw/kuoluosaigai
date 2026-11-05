@@ -1,6 +1,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { createRegistry, genRoomId } from './rooms.js'
@@ -49,7 +50,10 @@ function serveStatic(req, res) {
     return
   }
   const ext = path.extname(target).toLowerCase()
-  res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream' })
+  const headers = { 'content-type': MIME[ext] || 'application/octet-stream' }
+  // HTML 壳（含 SPA 回退）不缓存：发版后旧壳引用已删除的 hash 资源会白屏。
+  if (ext === '.html') headers['cache-control'] = 'no-cache'
+  res.writeHead(200, headers)
   fs.createReadStream(target).pipe(res)
 }
 
@@ -62,7 +66,7 @@ const HEARTBEAT_MS = 30_000 // 保活 ping 间隔；低于多数 NAT/代理的�
 function genNick() {
   let s = 'ANON-'
   for (let i = 0; i < 4; i++) {
-    s += NICK_CHARS[Math.floor(Math.random() * NICK_CHARS.length)]
+    s += NICK_CHARS[crypto.randomInt(0, NICK_CHARS.length)]
   }
   return s
 }
@@ -75,7 +79,7 @@ const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
 function genBootToken() {
   let s = ''
   for (let i = 0; i < 4; i++) {
-    s += ID_CHARS[Math.floor(Math.random() * ID_CHARS.length)]
+    s += ID_CHARS[crypto.randomInt(0, ID_CHARS.length)]
   }
   return s
 }
@@ -133,6 +137,7 @@ export function createServer(opts = {}) {
     historyRespMax = 200,
     joinFailLimit = 10,
     createLimit = 5,
+    globalCreateLimit = 30, // 服务端级：所有连接合计 30 次/60s（防分布式刷注册表）
     countsBatchMax = 50,
     switchLimit = 20, // 切房成功节流：每连接 60s 窗内「换房成功的 join」封顶（首次落地计入；幂等重进与失败帧不计）
   } = opts
@@ -160,6 +165,7 @@ export function createServer(opts = {}) {
   const clients = new Map() // ws -> { connId, nick, roomId, times, joinFails, creates, switches }
   const rooms = new Map() // roomId -> Set<ws>
   const byConnId = new Map() // selfId(connId) -> ws：history-res 点对点路由用，入房登记、断连删除
+  const globalCreates = [] // 服务端级建房滑窗（跨连接）
   let connSeq = 0
   let msgSeq = 0
   const bootToken = genBootToken()
@@ -333,6 +339,12 @@ export function createServer(opts = {}) {
             send(ws, { type: 'rate', ts: now() })
             break
           }
+          // 全局闸：单连接各自 5 次挡不住分布式脚本，注册表是唯一落盘面。
+          if (windowSaturated(globalCreates, globalCreateLimit)) {
+            send(ws, { type: 'rate', ts: now() })
+            break
+          }
+          globalCreates.push(now())
           createRoom(ws, info)
           break
         case 'message': {
@@ -352,7 +364,7 @@ export function createServer(opts = {}) {
             ts: now(),
             roomId: info.roomId,
             nick: info.nick,
-            badge: String(frame.badge || ''),
+            badge: String(frame.badge || '').slice(0, 32), // 自报徽章不设上限等于让全房转发任意长串
             text,
           })
           break

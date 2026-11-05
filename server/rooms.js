@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 
 // 预置公共房间：注册表文件缺行时在构造阶段补写（append-only 账本的种子）
 export const PUBLIC_ROOM_IDS = ['setsubun', 'nebula', 'magenta', 'amber']
@@ -7,11 +8,14 @@ export const PUBLIC_ROOM_IDS = ['setsubun', 'nebula', 'magenta', 'amber']
 const CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
 const ID_LEN = 6
 
-// 6 字符 [a-z0-9] 房间 ID；rng 可注入以便测试（默认 Math.random）
-export function genRoomId(rng = Math.random) {
+// 6 字符 [a-z0-9] 房间 ID；rng 可注入以便测试。默认用 crypto.randomInt：
+// 房间 ID 是事实上的访问凭证，不能用可预测的 Math.random。
+export function genRoomId(rng = null) {
   let id = ''
   for (let i = 0; i < ID_LEN; i++) {
-    id += CHARS[Math.floor(rng() * CHARS.length)]
+    id += rng
+      ? CHARS[Math.floor(rng() * CHARS.length)]
+      : CHARS[crypto.randomInt(0, CHARS.length)]
   }
   return id
 }

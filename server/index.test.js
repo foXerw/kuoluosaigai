@@ -115,6 +115,17 @@ describe('chat server', () => {
     conn.ws.close()
   })
 
+  it('badge 超过 32 字符被截断（不再把任意长自报串广播给全房）', async () => {
+    await boot()
+    const conn = await connect()
+    await nextFrame(conn.received)
+    await joinRoom(conn, 'magenta')
+    send(conn, { type: 'message', text: 'hi', badge: 'B'.repeat(100) })
+    const msg = await nextFrame(conn.received)
+    expect(msg.badge).toBe('B'.repeat(32))
+    conn.ws.close()
+  })
+
   it('rate-limits after 10 messages/minute and suppresses broadcast', async () => {
     await boot()
     const conn = await connect()
@@ -619,6 +630,25 @@ describe('chat server', () => {
       expect(conn.received).toHaveLength(0) // 超限时不得有 created/joined 回执
       expect(countLines()).toBe(before) // 且完全没有落盘
       conn.ws.close()
+    })
+
+    it('全局建房闸：不同连接合计超限后回 rate（防分布式刷注册表）', async () => {
+      const roomsFile = path.join(TMP_ROOT, 'create-global.log')
+      await boot({ roomsFile, createLimit: 100, globalCreateLimit: 1 })
+      const a = await connect()
+      await nextFrame(a.received)
+      send(a, { type: 'create' })
+      expect((await nextFrame(a.received)).type).toBe('created')
+      await nextFrame(a.received) // joined
+
+      const b = await connect()
+      await nextFrame(b.received)
+      send(b, { type: 'create' })
+      expect(await nextFrame(b.received)).toMatchObject({ type: 'rate' })
+      await settle()
+      expect(b.received).toHaveLength(0)
+      a.ws.close()
+      b.ws.close()
     })
   })
 })
