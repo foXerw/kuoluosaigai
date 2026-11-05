@@ -3,7 +3,9 @@
 // `npm pack --dry-run --json` 人工核对（本机 npm 未登录，不执行 publish）。
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -67,10 +69,14 @@ describe('packaging：daemon 包', () => {
     expect(pkg.bin['saigai-bot']).toBe('./bin/saigai-bot.js')
   })
 
-  it('files 覆盖运行时入口与部署材料', () => {
-    for (const required of ['bin', 'deploy', 'cli.js', 'config.js', 'host.js', 'rpc.js', 'state.js', 'watch.js']) {
+  it('files 覆盖运行时入口与四份部署材料（不整目录收 deploy）', () => {
+    for (const required of [
+      'bin', 'cli.js', 'config.js', 'host.js', 'rpc.js', 'state.js', 'watch.js',
+      'deploy/Dockerfile', 'deploy/compose.yaml', 'deploy/README.md', 'deploy/saigai-bot.service',
+    ]) {
       expect(pkg.files).toContain(required)
     }
+    expect(pkg.files).not.toContain('deploy') // 整目录会把 deploy/config、deploy/data、.env 收进发布物
     for (const name of rootJsFiles(DAEMON_DIR)) {
       if (name === 'vitest.config.js') continue // 测试配置不进发布物
       expect(filesCovers(pkg.files, name), `files 漏了 ${name}`).toBe(true)
@@ -134,6 +140,46 @@ describe('packaging：Docker / NAS', () => {
       expect(text).not.toMatch(/sk-[A-Za-z0-9]{8,}/)
     }
   })
+
+  it('真实 npm pack：deploy 下的 .env/config/data 绝不进 tarball', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'saigai-pack-'))
+    try {
+      fs.cpSync(DAEMON_DIR, tmp, {
+        recursive: true,
+        filter: (src) => !src.includes(`${path.sep}node_modules`) && !src.includes(`${path.sep}tests`),
+      })
+      // 模拟 NAS 用户按文档把运行期材料放进了 deploy/（发布/重建镜像时最危险的形态）
+      fs.mkdirSync(path.join(tmp, 'deploy', 'config'), { recursive: true })
+      fs.mkdirSync(path.join(tmp, 'deploy', 'data'), { recursive: true })
+      fs.writeFileSync(path.join(tmp, 'deploy', '.env'), 'KUO_LLM_KEY=sk-LEAK\n')
+      fs.writeFileSync(path.join(tmp, 'deploy', 'config', 'saigai-bot.config.js'), 'export default {}\n')
+      fs.writeFileSync(path.join(tmp, 'deploy', 'data', 'state.json'), '{}')
+      fs.writeFileSync(path.join(tmp, 'deploy', 'data', 'rpc.json'), '{}')
+
+      const args = ['pack', '--dry-run', '--json']
+      const raw = process.env.npm_execpath
+        ? execFileSync(process.execPath, [process.env.npm_execpath, ...args], { cwd: tmp, encoding: 'utf8' })
+        : execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, {
+          cwd: tmp,
+          encoding: 'utf8',
+          shell: process.platform === 'win32',
+        })
+      const parsed = JSON.parse(raw)
+      // npm 10 的 workspace 模式返回数组；在包目录直接 pack 时返回 { <name>: {...} }
+      const entry = Array.isArray(parsed) ? parsed[0] : parsed[Object.keys(parsed)[0]]
+      const files = entry.files.map((f) => f.path)
+
+      for (const required of ['deploy/Dockerfile', 'deploy/compose.yaml', 'deploy/README.md', 'deploy/saigai-bot.service']) {
+        expect(files).toContain(required)
+      }
+      for (const leaked of files) {
+        expect(leaked).not.toMatch(/(^|\/)\.env($|\.)/)
+        expect(leaked).not.toMatch(/^deploy\/(config|data)\//)
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('packaging：三路线部署文档', () => {
@@ -177,5 +223,23 @@ describe('packaging：三路线部署文档', () => {
     const deployReadme = readText(path.join(DAEMON_DIR, 'deploy', 'README.md'))
     expect(readme).toContain('saigai-bot-deploy.md')
     expect(deployReadme).toContain('saigai-bot-deploy.md')
+  })
+
+  it('PVE 段与 systemd unit 对齐：env 文件、HOME 派生数据目录、无驻留账号', () => {
+    expect(doc).toContain('/etc/saigai-bot/saigai-bot.env')
+    expect(doc).toContain('/var/lib/saigai-bot/.config/saigai-bot')
+    expect(doc).not.toContain('sudo -u saigai-bot')
+    expect(doc).not.toContain('chown -R saigai-bot')
+    expect(doc).toContain('DynamicUser')
+  })
+
+  it('容器异常停机的残留锁有专门 FAQ', () => {
+    expect(doc).toContain('saigai-bot.lock')
+  })
+
+  it('deploy/README 不再宣称 core 是 private / 依赖 "*"', () => {
+    const deployReadme = readText(path.join(DAEMON_DIR, 'deploy', 'README.md'))
+    expect(deployReadme).not.toContain('private: true')
+    expect(deployReadme).not.toContain('kuoluosaigai-bot-core "*"')
   })
 })

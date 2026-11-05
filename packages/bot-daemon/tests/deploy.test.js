@@ -138,11 +138,20 @@ describe('deploy/README.md（运行语义文档——这些行为看起来像 bu
   })
 })
 
-describe('package.json files 字段（deploy/ 随包发布，运行时模块不漏）', () => {
-  it('files 含 deploy 与 bin，且根目录每个运行时模块都在列', () => {
+describe('package.json files 字段（部署材料随包发布，运行时模块不漏）', () => {
+  it('files 含四份部署材料与 bin，且根目录每个运行时模块都在列', () => {
     const pkg = JSON.parse(readRequired(PKG_JSON_PATH))
     expect(Array.isArray(pkg.files), 'files 必须是数组').toBe(true)
-    expect(pkg.files).toContain('deploy')
+    // P2 收紧：不再整目录收 deploy（那会把用户就地创建的 .env/config/data 收进发布物）
+    for (const artifact of [
+      'deploy/Dockerfile',
+      'deploy/compose.yaml',
+      'deploy/README.md',
+      'deploy/saigai-bot.service',
+    ]) {
+      expect(pkg.files, artifact + ' 必须进 files').toContain(artifact)
+    }
+    expect(pkg.files).not.toContain('deploy')
     expect(pkg.files).toContain('bin')
     // 完整性：根目录 .js（除 vitest.config.js 这个纯测试基建）全部在 files 里——
     // bin 的 import 链（cli→config/lock/state/host/watch/doctor/log + 延迟 rpc）少一件

@@ -48,25 +48,30 @@ saigai-bot doctor                # 出网、TLS、时钟、配置、WS 可达性
 
 ## 1. PVE / Linux VM + systemd
 
-**前置**：Node.js ≥ 22（原生 WebSocket）、可写的持久目录、一个非 root 运行用户。
+**前置**：Node.js ≥ 22（原生 WebSocket）。unit 用 `DynamicUser=yes`——**没有驻留
+系统账号**，每次启动铸临时 UID；`StateDirectory=saigai-bot` 会创建
+`/var/lib/saigai-bot` 并在每次启动对账属主。不要手工 `useradd` 或 `chown` 成某个固定用户。
 
 ```bash
 # ① 安装（npm 包发布后）
 sudo npm i -g kuoluosaigai-bot-daemon
-# 或在仓库里（发布前）
+# 或在仓库里（发布前）：npm install 后二进制在 node_modules/.bin/saigai-bot
 git clone https://github.com/foXerw/kuoluosaigai.git
 cd kuoluosaigai && npm install
 
-# ② 数据目录与配置
-sudo mkdir -p /var/lib/saigai-bot/.config/saigai-bot
-sudo chown -R saigai-bot:saigai-bot /var/lib/saigai-bot
-sudo -u saigai-bot $EDITOR /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
+# ② 配置就位（unit 的 HOME=/var/lib/saigai-bot，数据目录随之固定）
+sudo install -d -m 700 /var/lib/saigai-bot/.config/saigai-bot
+sudo $EDITOR /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
+sudo chmod 644 /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js  # DynamicUser 只读
 
-# ③ 先手动跑一遍确认
-sudo -u saigai-bot env KUO_LLM_KEY=sk-... saigai-bot doctor
-sudo -u saigai-bot env KUO_LLM_KEY=sk-... \
-  saigai-bot run --config /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js \
-  --data-dir /var/lib/saigai-bot
+# ③ provider key：unit 的 EnvironmentFile（root:600），不要写进配置文件
+sudo install -d -m 700 /etc/saigai-bot
+sudo sh -c 'umask 077; printf "KUO_LLM_KEY=%s\n" "sk-..." > /etc/saigai-bot/saigai-bot.env'
+sudo chmod 600 /etc/saigai-bot/saigai-bot.env
+
+# ④ 不写盘地先校验（validate 不连网、不创建 state；走仓库路线用 npx）
+KUO_LLM_KEY=sk-... saigai-bot validate \
+  /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
 ```
 
 常驻用仓库里的 unit 模板：`packages/bot-daemon/deploy/saigai-bot.service`。
@@ -75,11 +80,18 @@ sudo -u saigai-bot env KUO_LLM_KEY=sk-... \
 
 ```bash
 sudo cp packages/bot-daemon/deploy/saigai-bot.service /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/saigai-bot.service   # 需在 VM 上跑
 sudo systemctl daemon-reload
 sudo systemctl enable --now saigai-bot
 journalctl -fu saigai-bot
-saigai-bot status --data-dir /var/lib/saigai-bot
+# status 的数据目录与 unit 的 HOME 派生路径一致：
+saigai-bot status --data-dir /var/lib/saigai-bot/.config/saigai-bot
 ```
+
+> 换 key 改完 `/etc/saigai-bot/saigai-bot.env` 后必须
+> `sudo systemctl restart saigai-bot`——热重载不会换掉活进程里已冻结的 env。
+> `systemctl start` 后若 5 秒一循环重启，先看 journal：多半是 key 文件缺失/为空
+> （配置校验会拒起），不是网络问题。
 
 ---
 
@@ -117,7 +129,9 @@ docker compose exec saigai-bot saigai-bot status --data-dir /data
 - `restart: unless-stopped`；`stop_grace_period: 15s` 给 state 冲刷留时间。
 - 容器以 uid 1000 运行；NAS 的 ACL 若映射不同，改 compose 里的 `user:` 或目录属主。
 - 镜像只监听容器内部回环（`rpc.json` 控制面），不需要映射任何端口。
-- 升级：`docker compose pull`（或重新 build）后 `docker compose up -d`；数据目录不动。
+- 升级：重新 build 镜像后 `docker compose up -d`；数据目录不动。（本地 tag
+  `kuoluosaigai/saigai-bot:latest` 不要 `docker compose pull`——那会去 registry
+  找同名镜像；只有用 registry 镜像时才 pull。）
 
 ---
 
@@ -200,6 +214,20 @@ P1 事实：设备令牌尚未铸造（P3 能力），不是故障。
 
 **容器里数据没了**
 检查 `./data` 是否真的挂到持久路径、uid 1000 是否可写；不要用容器临时层。
+
+**容器异常停止后一直重启（锁被占）**
+容器重建后 PID 命名空间从头开始，旧锁里的 PID 可能又被新进程复用，daemon 会把
+上一次的锁误判成「仍有人持有」，`run` 退 3，`restart: unless-stopped` 于是每 5 秒
+重试一次。确认没有 daemon 在跑后清掉锁再起：
+
+```bash
+docker compose stop
+rm -f data/saigai-bot.lock
+docker compose up -d
+```
+
+这是 P1 单实例锁在容器 PID 复用下的已知边界；正常 `docker compose stop`（SIGTERM）
+会走完整关停并释放锁，只有断电/强杀才需要手动清。
 
 ## 发布 npm 包与镜像（人工步骤，本仓库不自动执行）
 

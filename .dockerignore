@@ -17,3 +17,9 @@ docs
 *.log
 .env
 .env.*
+**/.env
+**/.env.*
+**/deploy/config
+**/deploy/config/**
+**/deploy/data
+**/deploy/data/**

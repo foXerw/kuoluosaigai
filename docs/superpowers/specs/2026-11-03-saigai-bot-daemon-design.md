@@ -325,8 +325,12 @@ PVE VM 上连续跑 24h：无内存增长（bot 数固定）、无人时不出�
   （linux/amd64 + linux/arm64）写入文档。**本机未安装 Docker，镜像与 compose 未实测**。
 - **文档**：`docs/saigai-bot-deploy.md` 覆盖 PVE/systemd、NAS/Docker、Windows 三路线，
   含 key 承诺、成本/静默窗、重启清缓冲、npm registry 坑与「未实测」声明。
+- **发布物防泄漏**：daemon `files` **只列四份 deploy 材料**（Dockerfile/compose/README/
+  service），不整目录收 `deploy`——避免 NAS 用户就地创建的 `.env`、`deploy/config/`、
+  `deploy/data/` 被 `npm publish` 或镜像重建收进发布物。`.gitignore`、`.npmignore`、
+  `.dockerignore` 三重排除，另有一条**真实执行 `npm pack --dry-run`** 的回归测试。
 - **测试**：daemon `tests/packaging.test.js` 钉住包元数据、Docker/compose 契约与文档
-  必备信息；全量测试 708→725（471 客户端 + 39 服务端 + 215 daemon）。
+  必备信息；全量测试 708→729（471 客户端 + 39 服务端 + 219 daemon）。
 
 ---
 

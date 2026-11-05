@@ -1,0 +1,11 @@
+# Defense in depth: `files` is already an explicit whitelist, but a future edit that
+# re-adds the `deploy` directory must never be able to publish runtime secrets/state.
+deploy/config/
+deploy/data/
+deploy/.env
+deploy/.env.*
+.env
+.env.*
+*.tgz
+tests/
+vitest.config.js

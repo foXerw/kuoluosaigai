@@ -8,6 +8,13 @@ server/data/
 .env.local
 .env.*.local
 
+# saigai-bot daemon runtime material (P2 NAS/docker 模板的就地配置/数据目录):
+# 绝不提交 key、state.json、rpc.json、锁文件
+packages/bot-daemon/deploy/.env
+packages/bot-daemon/deploy/.env.*
+packages/bot-daemon/deploy/config/
+packages/bot-daemon/deploy/data/
+
 # Log files
 npm-debug.log*
 yarn-debug.log*

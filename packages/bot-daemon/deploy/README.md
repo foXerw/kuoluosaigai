@@ -13,16 +13,17 @@
 
 ```bash
 # ① 装包（saigai-bot 进 PATH；engines: Node ≥ 22，裁定 D1 用原生 WebSocket、零运行时依赖）
-# 本步与 ③ 的 systemd-analyze verify 同类：**到 VM 上跑、尚未实测**。理由：
-# bot-daemon 依赖 kuoluosaigai-bot-core "*"——workspace 本地包、`private: true`、
-# 不在 registry 上，`npm install -g ./packages/bot-daemon` 这类要 npm 去 registry
-# 解析 "*" 的路线在干净 VM 上预期 E404。推荐离线路线（每步都不向 registry 拉 core）：
-#   开发机：npm pack packages/bot-core && npm pack packages/bot-daemon
-#   VM：   npm install -g ./kuoluosaigai-bot-core-<ver>.tgz ./kuoluosaigai-bot-daemon-<ver>.tgz
-# 两个 tarball 放进同一条命令，让 core 由在场 tarball 就地满足。首次部署请记录
-# npm 输出：若 "*" 仍被送去 registry 解析（E404），兜底路线 = VM 上 clone 本仓库 +
-# `npm ci` + 在 packages/bot-daemon 里 `npm link`（workspace 树内兄弟包已在场，
-# link 只补全局符号链接）。哪条路成真，回来更新本节——别在这里加没跑过的保证。
+# core 作为 daemon 的 ^0.1.0 依赖自动安装（发布顺序：core 先于 daemon）。
+sudo npm i -g kuoluosaigai-bot-daemon
+saigai-bot --help
+#
+# 离线 / 包尚未发布时的兜底：开发机各 pack 一份，VM 上同一条命令装两个 tarball。
+#   开发机：npm pack --workspace kuoluosaigai-bot-core
+#           npm pack --workspace kuoluosaigai-bot-daemon
+#   VM：   sudo npm i -g ./kuoluosaigai-bot-core-<ver>.tgz ./kuoluosaigai-bot-daemon-<ver>.tgz
+# 企业镜像/禁 remote 包时先 `npm config set registry https://registry.npmmirror.com`。
+# 本步与 ③ 的 systemd-analyze verify 同类：**到 VM 上跑、尚未实测**——别在这里加
+# 没跑过的保证；哪条路成真，回来更新本节。
 
 # ② unit 就位
 sudo cp packages/bot-daemon/deploy/saigai-bot.service /etc/systemd/system/
