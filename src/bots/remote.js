@@ -371,6 +371,9 @@ export function createRemoteStore({
       persist()
     },
     command,
+    setNotice(message) {
+      store.notice = typeof message === 'string' ? message : '操作失败'
+    },
     refreshSessions: requestSessions,
     revokeSession,
     startBot: (id) => command('bot.start', { id }),

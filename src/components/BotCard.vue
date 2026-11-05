@@ -32,14 +32,14 @@
     <footer class="bot-card__ops">
       <button class="bot-card__start" :disabled="startDisabled" @click="$emit('start')">▶ 启动</button>
       <button class="bot-card__stop" :disabled="stopDisabled" @click="$emit('stop')">■ 停止</button>
-      <button class="bot-card__expand" @click="expanded = !expanded">
+      <button v-if="showWatch" class="bot-card__expand" @click="expanded = !expanded">
         {{ expanded ? '收起观战' : '展开观战' }}
       </button>
       <button class="bot-card__edit-toggle" @click="toggleEdit">{{ editing ? '取消编辑' : '编辑' }}</button>
       <button class="bot-card__remove" @click="$emit('remove')">✕ 删除</button>
     </footer>
 
-    <div v-if="expanded" class="bot-card__watch">
+    <div v-if="expanded && showWatch" class="bot-card__watch">
       <div class="bot-card__frames">
         <p v-for="(f, i) in frames" :key="i" class="bot-card__frame">
           <span v-if="f.badge" class="bot-card__frame-badge">[{{ f.badge }}]</span>
@@ -97,6 +97,8 @@ export default {
   props: {
     bot: { type: Object, required: true },
     providers: { type: Array, default: () => [] },
+    // P3c：远端观战缓冲不经过中继（dev-state 只有运行态），远端面板隐藏观战区
+    showWatch: { type: Boolean, default: true },
   },
   emits: ['start', 'stop', 'switch-room', 'clear-buffer', 'update', 'remove'],
   data() {

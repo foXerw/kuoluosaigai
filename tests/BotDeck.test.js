@@ -51,6 +51,38 @@ function setup() {
 }
 
 describe('BotDeck', () => {
+  it('P3c：注入 remote 时显示 deck 切换；选设备切到 RemoteDeck', async () => {
+    const runnerStub = makeRunnerStub()
+    const store = createBotStore({
+      wsUrl: 'ws://test',
+      rng: () => 0.5,
+      deps: { tabId: 'tab-A', createRunner: runnerStub.factory, sleep: () => Promise.resolve() },
+    })
+    disposables.push(store)
+    const remote = {
+      devices: [{ deviceId: 'd1', name: 'lab-vm' }],
+      selectedId: 'd1',
+      selectedDevice: { deviceId: 'd1', name: 'lab-vm' },
+      status: 'idle',
+      online: false,
+      bots: [],
+      providers: [],
+      sessions: [],
+      notice: '',
+      select: vi.fn(),
+      pair: vi.fn(),
+    }
+    const w = mount(BotDeck, { props: { store, remote } })
+    expect(w.find('.deck__nav').exists()).toBe(true)
+    expect(w.find('.deck__body').exists()).toBe(true)
+    const deviceBtn = w.findAll('.deck__nav-btn').find((b) => b.text().includes('lab-vm'))
+    await deviceBtn.trigger('click')
+    expect(remote.select).toHaveBeenCalledWith('d1')
+    expect(w.find('.deck__body').exists()).toBe(false)
+    expect(w.find('.remote').exists()).toBe(true)
+    w.unmount()
+  })
+
   it('providers：选预设自动填 baseUrl；key 输入 type=password；添加后出现在列表', async () => {
     const { store, w } = setup()
     const presets = w.findAll('.deck__preset')

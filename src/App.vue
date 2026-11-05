@@ -21,6 +21,7 @@
       <BotDeck
         v-if="botDeckOpen"
         :store="botStore"
+        :remote="remoteStore"
         :initial-room-id="channel.roomId"
         @close="botDeckOpen = false"
       />
@@ -37,6 +38,7 @@ import BotDeck from './components/BotDeck.vue'
 import ScanlineWipe from './components/ScanlineWipe.vue'
 import { pickChannel, reshuffleChannel } from './theme/channels'
 import { createBotStore } from './bots/store'
+import { createRemoteStore } from './bots/remoteStore'
 
 // Safety fallback for the wipe phase. --wipe-ms is 600ms in src/styles/terminal.css;
 // this is 600ms wipe + 200ms slack in case the ScanlineWipe animationend never fires
@@ -117,6 +119,8 @@ export default {
     // 持久配置加载在 createBotStore 构造尾 loadInto() 完成——此处不再重复 store.load()
     //（终审 M3：删冗余读盘；load() 仍为公开 API 供他处需要重载时用）
     this.botStore = createBotStore({ wsUrl: this.wsUrl })
+    // P3c：远端设备 store（配对/远端 deck）。构造只读 localStorage，不建连。
+    this.remoteStore = createRemoteStore({ wsUrl: this.wsUrl })
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeunload', this.onUnload)
     }
@@ -126,6 +130,7 @@ export default {
       window.removeEventListener('beforeunload', this.onUnload)
     }
     this.botStore.dispose()
+    if (this.remoteStore) this.remoteStore.dispose()
     if (this.wipeTimer) {
       clearTimeout(this.wipeTimer)
       this.wipeTimer = null
@@ -157,6 +162,7 @@ export default {
     // 否则其他标签页被死租约挡 45s，且本会话 token 用量丢失
     onUnload() {
       this.botStore.dispose()
+      if (this.remoteStore) this.remoteStore.dispose()
     },
     closeChat() {
       this.chatOpen = false

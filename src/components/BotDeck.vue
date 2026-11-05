@@ -5,7 +5,21 @@
       <button class="deck__close" aria-label="关闭" @click="$emit('close')">✕</button>
     </header>
 
-    <div class="deck__body">
+    <nav v-if="remote" class="deck__nav">
+      <button class="deck__nav-btn" :class="{ 'deck__nav-btn--on': deckMode === 'local' }" @click="deckMode = 'local'">
+        本浏览器
+      </button>
+      <button
+        v-for="d in remote.devices"
+        :key="d.deviceId"
+        class="deck__nav-btn"
+        :class="{ 'deck__nav-btn--on': deckMode === 'remote' && remote.selectedId === d.deviceId }"
+        @click="openRemote(d.deviceId)"
+      >{{ d.name }}</button>
+      <button class="deck__nav-btn" @click="deckMode = 'remote'">＋ 配对设备</button>
+    </nav>
+
+    <div v-if="deckMode === 'local'" class="deck__body">
       <p v-if="store.storageDegraded" class="deck__warn deck__warn--yellow">
         &gt; ⚠ localStorage 写入失败——本次配置仅存内存，刷新即丢（B17）。
       </p>
@@ -104,6 +118,7 @@
 
       <p class="deck__foot">&gt; badge（BOT·人格名）公开可被仿造 · 标签页后台时定时器节流，回复迟到属预期（B14）。[ESC] 关面板，bot 照跑。</p>
     </div>
+    <RemoteDeck v-else :store="remote" />
   </div>
 </template>
 
@@ -116,6 +131,7 @@
 // 错过的 storage 事件靠打开补齐），window 'storage'(LEASE_KEY) 只作触发信号；判定
 // 全部交给 store.refreshLeases()——组件不复刻租约解析器/tabId 排除/新鲜度计算。
 import BotCard from './BotCard.vue'
+import RemoteDeck from './RemoteDeck.vue'
 import { MAX_BOTS, PROVIDER_PRESETS } from '../bots/store'
 // R18(2)：新建表单的拟人参数默认取 core 权威常量——写死字面量会让 core 默认日后改动
 // 传不到 UI 新建的 bot（表单初值作为显式值流进 addBot，绕开 normalizeCfg 缺省）。
@@ -126,15 +142,18 @@ import { PUBLIC_ROOM_IDS } from '../theme/channels'
 
 export default {
   name: 'BotDeck',
-  components: { BotCard },
+  components: { BotCard, RemoteDeck },
   props: {
     store: { type: Object, required: true },
     // 新建表单默认房间：App 传落地房；缺省时退回首个公共房（向后兼容）
     initialRoomId: { type: String, default: '' },
+    // P3c：远端设备 store（App 注入）；缺省时不显示 deck 切换，纯本地行为零变化
+    remote: { type: Object, default: null },
   },
   emits: ['close'],
   data() {
     return {
+      deckMode: 'local',
       presets: PROVIDER_PRESETS,
       maxBots: MAX_BOTS,
       prov: { name: '', baseUrl: '', apiKey: '' },
@@ -175,6 +194,10 @@ export default {
     window.removeEventListener('storage', this._onStorage)
   },
   methods: {
+    openRemote(deviceId) {
+      this.deckMode = 'remote'
+      if (this.remote) this.remote.select(deviceId)
+    },
     usePreset(p) {
       this.prov.name = p.name
       this.prov.baseUrl = p.baseUrl
@@ -417,5 +440,26 @@ export default {
   font-size: 11px;
   letter-spacing: 1px;
   opacity: 0.5;
+}
+
+/* P3c deck 切换 */
+.deck__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 18px;
+  border-bottom: 1px solid rgba(57, 255, 20, 0.25);
+}
+.deck__nav-btn {
+  background: transparent;
+  border: 1px solid rgba(57, 255, 20, 0.4);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.deck__nav-btn--on {
+  background: rgba(57, 255, 20, 0.18);
 }
 </style>
