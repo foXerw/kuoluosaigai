@@ -103,6 +103,10 @@ const USAGE = [
   '  saigai-bot doctor [--config <路径>] [--data-dir <路径>]',
   '      环境体检，逐项打印 OK/FAIL：Node 版本、原生 WebSocket、配置校验、',
   '      provider 出网实测（§5 前提）、serverUrl WS 可达、本地时钟、数据目录可写。',
+  '  saigai-bot pair [--data-dir <路径>]',
+  '      向正在运行的 daemon 申请一次性配对码（60s 有效）；在网站 BOT DECK 输入。',
+  '  saigai-bot revoke --all [--data-dir <路径>]',
+  '      撤销所有已配对浏览器，并轮换本机设备令牌（旧 token 立即失效）。',
   '  saigai-bot status [--data-dir <路径>]',
   '      查询运行中的 daemon：读数据目录 rpc.json，带其中 secret 向 127.0.0.1 发一次',
   '      只读 GET /status 并渲染——数据年龄（Q12 口径 ≤5s）、粘滞 restartRequired（置顶',
@@ -140,6 +144,7 @@ function withDefaults(deps) {
     // 这里只透传注入面：测试给假件即短路，真实路径各自补默认。
     startControlServer: d.startControlServer,
     readRpcFile: d.readRpcFile,
+    callControl: d.callControl, // P3b：pair/revoke 的控制面调用（测试注入）
     statusTimeoutMs: d.statusTimeoutMs,
     onSignal:
       d.onSignal ||
@@ -185,11 +190,13 @@ function noopReport(cfg) {
 
 // —— 参数解析（零依赖手写）——
 function parseOptions(rest) {
-  const opts = { once: false, config: null, dataDir: null, positional: [] }
+  const opts = { once: false, all: false, config: null, dataDir: null, positional: [] }
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i]
     if (a === '--once') {
       opts.once = true
+    } else if (a === '--all') {
+      opts.all = true
     } else if (a === '--config' || a === '--data-dir') {
       const v = rest[i + 1]
       if (typeof v !== 'string' || v === '') return { error: '缺少参数值：' + a + ' 后面要跟路径' }
@@ -414,7 +421,16 @@ async function runCommand(rest, d) {
       const bootControl = d.startControlServer || (await import('./rpc.js')).startControlServer
       // Task 11/Handoff 3（Task 10 parked Minor 1）：控制面必须能把 500 打进日志——
       // status 是操作者的眼睛，它坏了不许零痕迹（rpc.js 只在 500 路径调 logger.warn，常量文本）。
-      control = await bootControl({ snapshot: () => host.snapshot(), dir: dataDir, logger: d.logger })
+      control = await bootControl({
+        snapshot: () => host.snapshot(),
+        dir: dataDir,
+        logger: d.logger,
+        // P3b：pair/revoke 只经本机回环控制面触发；命令实现里绝不含 token/密钥。
+        commands: {
+          pair: () => host.pair(),
+          revokeAll: () => host.revokeAll(),
+        },
+      })
       d.logger.info('控制服务已就绪 127.0.0.1:' + control.port + '（rpc.json 已落 ' + dataDir + '；secret 只在那份文件里，不进日志）')
     } catch (err) {
       control = null
@@ -473,6 +489,75 @@ async function runCommand(rest, d) {
 }
 
 // —— status：CLI 只做用法校验与退出码映射；查询与渲染的真身在 rpc.js（runStatus）——
+// —— P3b：pair / revoke ——
+// 两者都只和**正在运行的 daemon** 说话（本地回环 rpc）；daemon 没起或未接设备链路 → 明确退 1。
+async function pairCommand(rest, d) {
+  const opts = parseOptions(rest)
+  if (opts.help) {
+    d.print(USAGE)
+    return EXIT_OK
+  }
+  if (opts.error || opts.positional.length > 0) {
+    if (opts.error) d.printErr('用法错误：' + opts.error)
+    d.print(USAGE)
+    return EXIT_USAGE
+  }
+  const dataDir = opts.dataDir || path.join(d.homedir(), DEFAULT_DATA_SUBDIR)
+  let call = d.callControl
+  if (!call) {
+    try {
+      call = (await import('./rpc.js')).callControl
+    } catch (err) {
+      d.printErr('FAIL: pair 未能加载控制面模块（' + ((err && (err.code || err.name)) || '未知原因') + '）')
+      return EXIT_FAIL
+    }
+  }
+  const res = await call({ dir: dataDir, path: '/pair', fetchImpl: d.fetchImpl })
+  if (!res || !res.ok) {
+    d.printErr('FAIL: 配对请求失败（' + ((res && res.reason) || 'unknown') + '）——daemon 在跑吗？设备通道连上了吗？')
+    return EXIT_FAIL
+  }
+  const code = res.body && res.body.code
+  if (typeof code !== 'string' || !code) {
+    d.printErr('FAIL: daemon 返回的配对码非法')
+    return EXIT_FAIL
+  }
+  const secs = Math.max(1, Math.round((Number(res.body.expiresMs) || 60000) / 1000))
+  d.print('配对码 ' + code + ' — 在 kuoluosaigai.com 的 BOT DECK 输入即可接管这台设备（' + secs + 's 有效）')
+  return EXIT_OK
+}
+
+async function revokeCommand(rest, d) {
+  const opts = parseOptions(rest)
+  if (opts.help) {
+    d.print(USAGE)
+    return EXIT_OK
+  }
+  if (opts.error || opts.positional.length > 0 || !opts.all) {
+    d.printErr('用法错误：revoke 只支持 --all（终端是设备的所有者，不支持逐个踢人）')
+    d.print(USAGE)
+    return EXIT_USAGE
+  }
+  const dataDir = opts.dataDir || path.join(d.homedir(), DEFAULT_DATA_SUBDIR)
+  let call = d.callControl
+  if (!call) {
+    try {
+      call = (await import('./rpc.js')).callControl
+    } catch (err) {
+      d.printErr('FAIL: revoke 未能加载控制面模块（' + ((err && (err.code || err.name)) || '未知原因') + '）')
+      return EXIT_FAIL
+    }
+  }
+  const res = await call({ dir: dataDir, path: '/revoke', fetchImpl: d.fetchImpl })
+  if (!res || !res.ok) {
+    d.printErr('FAIL: 撤销请求失败（' + ((res && res.reason) || 'unknown') + '）——daemon 在跑吗？')
+    return EXIT_FAIL
+  }
+  const deviceId = res.body && res.body.deviceId
+  d.print('已撤销全部配对浏览器' + (typeof deviceId === 'string' ? '；新设备身份 ' + deviceId : '') + '。')
+  return EXIT_OK
+}
+
 async function statusCommand(rest, d) {
   const opts = parseOptions(rest)
   if (opts.error || opts.help) {
@@ -528,6 +613,8 @@ export async function main(argv, deps) {
   if (cmd === 'validate') return validateCommand(rest, d)
   if (cmd === 'doctor') return doctorCommand(rest, d)
   if (cmd === 'status') return statusCommand(rest, d)
+  if (cmd === 'pair') return pairCommand(rest, d)
+  if (cmd === 'revoke') return revokeCommand(rest, d)
   if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     d.print(USAGE)
     return EXIT_OK

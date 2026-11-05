@@ -75,6 +75,9 @@ const NOT_FOUND_BODY = JSON.stringify({ error: 'not-found' })
 const METHOD_NOT_ALLOWED_BODY = JSON.stringify({ error: 'method-not-allowed' })
 const BODY_TOO_LARGE_BODY = JSON.stringify({ error: 'body-too-large' })
 const SNAPSHOT_FAIL_BODY = JSON.stringify({ error: 'snapshot-unavailable' })
+const PAIR_UNAVAILABLE_BODY = JSON.stringify({ error: 'pair-unavailable' })
+const REVOKE_UNAVAILABLE_BODY = JSON.stringify({ error: 'revoke-unavailable' })
+const COMMAND_FAIL_BODY = JSON.stringify({ error: 'command-failed' })
 
 /** 密码学随机 secret：n 字节 → 2n 位小写 hex。生产默认 16 字节（32 hex），不得更短。 */
 export function randomHex(byteLength = 16) {
@@ -162,6 +165,7 @@ export async function startControlServer({
   pid = process.pid,
   startedAt = Date.now(),
   logger = null,
+  commands = null, // P3b：{ pair, revokeAll }；缺省时 POST 端点回 503
 } = {}) {
   if (typeof snapshot !== 'function') throw new TypeError('startControlServer: snapshot 必须是函数（Task 7 host.snapshot 的接线面）')
   if (typeof dir !== 'string' || dir === '') throw new TypeError('startControlServer: dir 必填（rpc.json 落数据目录）')
@@ -192,48 +196,77 @@ export async function startControlServer({
     req.on('error', () => {
       killed = true // 客户端半程断裂/超时：路由阶段不再回话
     })
+    function warnConstant(msg, endpoint) {
+      try {
+        if (logger && typeof logger.warn === 'function') logger.warn(msg, { endpoint })
+      } catch (e) {
+        /* sink 免疫 */
+      }
+    }
+
+    async function route() {
+      if (req.url === '/status') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, METHOD_NOT_ALLOWED_BODY)
+          return
+        }
+        // 整个「取数→序列化→出报」同一条 try：控制面炸穿 bot 面是 A3 不变量的反面。
+        try {
+          const snap = snapshot()
+          sendJson(res, 200, JSON.stringify(snap))
+        } catch (e) {
+          warnConstant('控制面 GET /status 快照或序列化失败（请求面兜底）', '/status')
+          if (!res.headersSent) {
+            sendJson(res, 500, SNAPSHOT_FAIL_BODY) // 固定体：异常文本可能带切片（A3）
+          } else {
+            try {
+              res.end()
+            } catch (e2) {
+              /* 响应面已半程破损 */
+            }
+          }
+        }
+        return
+      }
+
+      if (req.url === '/pair' || req.url === '/revoke') {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, METHOD_NOT_ALLOWED_BODY)
+          return
+        }
+        const isPair = req.url === '/pair'
+        const fn = commands && (isPair ? commands.pair : commands.revokeAll)
+        if (typeof fn !== 'function') {
+          sendJson(res, 503, isPair ? PAIR_UNAVAILABLE_BODY : REVOKE_UNAVAILABLE_BODY)
+          return
+        }
+        try {
+          const body = await fn()
+          // 响应只可能是 {code,expiresMs} / {deviceId}——命令实现不得把 token 放进来。
+          sendJson(res, 200, JSON.stringify(body || {}))
+        } catch (e) {
+          warnConstant(isPair ? '控制面 POST /pair 失败' : '控制面 POST /revoke 失败', isPair ? '/pair' : '/revoke')
+          if (!res.headersSent) {
+            sendJson(res, 503, isPair ? PAIR_UNAVAILABLE_BODY : REVOKE_UNAVAILABLE_BODY)
+          }
+        }
+        return
+      }
+
+      sendJson(res, 404, NOT_FOUND_BODY) // 不回显 req.url（A3）
+    }
+
     req.on('end', () => {
       if (killed || res.headersSent) return
       if (!secretMatches(req.headers[SECRET_HEADER], finalSecret)) {
         sendJson(res, 401, UNAUTHORIZED_BODY) // 缺与错共用同一体（A7 精神）
         return
       }
-      if (req.url !== '/status') {
-        sendJson(res, 404, NOT_FOUND_BODY) // 不回显 req.url（A3），不碰 snapshot（A3 只读一个端点）
-        return
-      }
-      if (req.method !== 'GET') {
-        sendJson(res, 405, METHOD_NOT_ALLOWED_BODY)
-        return
-      }
-      // 整个「取数→序列化→出报」同一条 try（审查轮 1 Important 2）：'request' 回调里的
-      // 任何同步抛（snapshot、JSON.stringify 对 BigInt/循环值、写头后的 end 边角）都会
-      // 逸出成 uncaughtException——控制面炸穿 bot 面是 A3 不变量的反面，只防构造期不够，
-      // 请求路径同样要兜住。
-      try {
-        const snap = snapshot()
-        sendJson(res, 200, JSON.stringify(snap))
-      } catch (e) {
-        // Task 11（Task 10 parked Minor 1）：status 是操作者的眼睛，它坏了必须留痕——
-        // 只在 catch 入径出声，**常量文本、零请求/响应/异常内容**（A3：异常文本可能带切片）。
-        // 日志器自身炸不许拦 500 响应（sink 免疫贯穿接线，Task 1 教训）。
-        try {
-          if (logger && typeof logger.warn === 'function') {
-            logger.warn('控制面 GET /status 快照或序列化失败（请求面兜底）', { endpoint: '/status' })
-          }
-        } catch (e2) {
-          /* 吞。 */
-        }
-        if (!res.headersSent) {
-          sendJson(res, 500, SNAPSHOT_FAIL_BODY) // 固定体：异常文本可能带切片（A3），绝不外泄
-        } else {
-          try {
-            res.end()
-          } catch (e2) {
-            /* 响应面已半程破损：吞，socket 层由 server 收口 */
-          }
-        }
-      }
+      // async 路由必须自己兜底：end 回调的返回值 Node 不接。
+      void route().catch(() => {
+        warnConstant('控制面请求处理未预期异常', req.url === '/pair' || req.url === '/revoke' ? req.url : 'unknown')
+        if (!res.headersSent) sendJson(res, 500, COMMAND_FAIL_BODY)
+      })
     })
   }
 
@@ -407,6 +440,51 @@ function statusRender(o, snap, dataDir) {
     }
   }
   return true
+}
+
+/**
+ * P3b：CLI → 活 daemon 的控制命令（pair/revoke）。只允许两个固定端点。
+ * 返回值只含状态与已解析 body；错误原因固定，不含 secret/响应体。
+ * @param {{ dir: string, path: '/pair'|'/revoke', timeoutMs?: number,
+ *   fetchImpl?: Function, readRpcFile?: Function }} opts
+ */
+export async function callControl({
+  dir,
+  path: endpoint,
+  timeoutMs = 8000,
+  fetchImpl = globalThis.fetch,
+  readRpcFile: readFile = readRpcFile,
+} = {}) {
+  if (endpoint !== '/pair' && endpoint !== '/revoke') {
+    return { ok: false, reason: 'bad endpoint' }
+  }
+  const rpc = readFile({ dir })
+  if (!rpc.ok) return { ok: false, reason: 'rpc unavailable' }
+  const url = 'http://127.0.0.1:' + rpc.info.port + endpoint
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    let res
+    try {
+      res = await fetchImpl(url, {
+        method: 'POST',
+        headers: { [SECRET_HEADER]: rpc.info.secret },
+        signal: ac.signal,
+      })
+    } catch (e) {
+      return { ok: false, reason: e && e.name === 'AbortError' ? 'timeout' : 'network' }
+    }
+    if (!res.ok) return { ok: false, reason: 'status ' + res.status }
+    let body
+    try {
+      body = JSON.parse(await res.text())
+    } catch (e) {
+      return { ok: false, reason: 'bad response' }
+    }
+    return { ok: true, body }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**

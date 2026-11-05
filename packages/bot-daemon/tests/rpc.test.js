@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 
-import { RPC_FILE_NAME, SECRET_HEADER, randomHex, readRpcFile, startControlServer } from '../rpc.js'
+import { RPC_FILE_NAME, SECRET_HEADER, callControl, randomHex, readRpcFile, startControlServer } from '../rpc.js'
 
 let tmpRoot
 beforeAll(() => {
@@ -292,4 +292,80 @@ it('readRpcFile：缺文件→missing；坏 JSON/非法字段→malformed；EISD
   fs.mkdirSync(path.join(nested, RPC_FILE_NAME)) // 目录占位 → 读必 EISDIR
   expect(readRpcFile({ dir: nested }).ok).toBe(false)
   expect(readRpcFile({ dir: nested }).why).toBe('unreadable')
+})
+
+// —— P3b：POST /pair /revoke 与 callControl ——
+
+it('POST /pair → 200 {code,expiresMs}；GET → 405；无命令实现 → 503 固定体', async () => {
+  await withServer({
+    server: { commands: { pair: async () => ({ code: 'ABC234', expiresMs: 60000 }) } },
+  }, async (h) => {
+    const ok = await rawRequest(h.port, {
+      method: 'POST',
+      path: '/pair',
+      headers: { [SECRET_HEADER]: h.secret },
+    })
+    expect(ok.status).toBe(200)
+    expect(JSON.parse(ok.text)).toEqual({ code: 'ABC234', expiresMs: 60000 })
+    expect(ok.text).not.toContain(h.secret)
+
+    const wrongMethod = await rawRequest(h.port, {
+      method: 'GET',
+      path: '/pair',
+      headers: { [SECRET_HEADER]: h.secret },
+    })
+    expect(wrongMethod.status).toBe(405)
+  })
+
+  await withServer({}, async (h) => {
+    const res = await rawRequest(h.port, {
+      method: 'POST',
+      path: '/pair',
+      headers: { [SECRET_HEADER]: h.secret },
+    })
+    expect(res.status).toBe(503)
+    expect(JSON.parse(res.text)).toEqual({ error: 'pair-unavailable' })
+  })
+})
+
+it('POST /revoke → 200 {deviceId}；命令抛错 → 503 固定体且不回显异常', async () => {
+  await withServer({
+    server: { commands: { revokeAll: async () => ({ deviceId: 'abc123abc123abc1' }) } },
+  }, async (h) => {
+    const res = await rawRequest(h.port, {
+      method: 'POST',
+      path: '/revoke',
+      headers: { [SECRET_HEADER]: h.secret },
+    })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.text)).toEqual({ deviceId: 'abc123abc123abc1' })
+  })
+
+  await withServer({
+    server: { commands: { revokeAll: async () => { throw new Error('secret-ish failure') } } },
+  }, async (h) => {
+    const res = await rawRequest(h.port, {
+      method: 'POST',
+      path: '/revoke',
+      headers: { [SECRET_HEADER]: h.secret },
+    })
+    expect(res.status).toBe(503)
+    expect(JSON.parse(res.text)).toEqual({ error: 'revoke-unavailable' })
+    expect(res.text).not.toContain('secret-ish')
+  })
+})
+
+it('callControl：走 rpc.json + secret 完成 pair/revoke；未知 endpoint 拒绝', async () => {
+  await withServer({
+    server: {
+      commands: {
+        pair: async () => ({ code: 'ABC234', expiresMs: 60000 }),
+        revokeAll: async () => ({ deviceId: 'abc123abc123abc1' }),
+      },
+    },
+  }, async (h, dir) => {
+    expect(await callControl({ dir, path: '/pair' })).toEqual({ ok: true, body: { code: 'ABC234', expiresMs: 60000 } })
+    expect(await callControl({ dir, path: '/revoke' })).toEqual({ ok: true, body: { deviceId: 'abc123abc123abc1' } })
+    expect(await callControl({ dir, path: '/status' })).toEqual({ ok: false, reason: 'bad endpoint' })
+  })
 })

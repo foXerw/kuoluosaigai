@@ -181,6 +181,7 @@ function ctx(over) {
         }
       }),
     readRpcFile: x.readRpcFile || (() => ({ ok: false, why: 'missing', path: '/virtual/rpc.json' })),
+    callControl: x.callControl, // P3b pair/revoke
     homedir: () => tmpRoot,
     now: () => 1730000000000,
     onSignal: (name, cb) => {
@@ -204,7 +205,7 @@ async function until(cond, tries) {
 
 // —— 用法与退出码 2 ——
 
-it('未知子命令：打印用法退 2；§8.2 红线——help 不提 pair/revoke', async () => {
+it('未知子命令：打印用法退 2；P3b 起 help 必须含 pair/revoke', async () => {
   const c = ctx({})
   const code = await main(['bogus'], c.deps)
   expect(code).toBe(2)
@@ -213,8 +214,39 @@ it('未知子命令：打印用法退 2；§8.2 红线——help 不提 pair/rev
   expect(joined).toContain('validate')
   expect(joined).toContain('doctor')
   expect(joined).toContain('saigai-bot status')
-  expect(joined).not.toContain('pair')
-  expect(joined).not.toContain('revoke')
+  expect(joined).toContain('saigai-bot pair')
+  expect(joined).toContain('saigai-bot revoke --all')
+})
+
+it('pair：打印配对码退 0；控制面失败退 1；输出不含 token/key', async () => {
+  let seen = null
+  const a = ctx({
+    callControl: async (o) => {
+      seen = o
+      return { ok: true, body: { code: 'ABC234', expiresMs: 60000 } }
+    },
+  })
+  expect(await main(['pair', '--data-dir', '/tmp/d'], a.deps)).toBe(0)
+  expect(seen.path).toBe('/pair')
+  expect(a.out.join('\n')).toContain('ABC234')
+  expect(a.out.join('\n')).not.toContain(SECRET)
+
+  const b = ctx({ callControl: async () => ({ ok: false, reason: 'status 503' }) })
+  expect(await main(['pair'], b.deps)).toBe(1)
+  expect(b.errs.join('\n')).toContain('FAIL')
+})
+
+it('revoke 必须 --all；成功打印新 deviceId；失败退 1', async () => {
+  const a = ctx({ callControl: async () => ({ ok: true, body: { deviceId: 'abc123abc123abc1' } }) })
+  expect(await main(['revoke'], a.deps)).toBe(2)
+  expect(a.errs.join('\n')).toContain('--all')
+
+  const b = ctx({ callControl: async () => ({ ok: true, body: { deviceId: 'abc123abc123abc1' } }) })
+  expect(await main(['revoke', '--all', '--data-dir', '/tmp/d'], b.deps)).toBe(0)
+  expect(b.out.join('\n')).toContain('abc123abc123abc1')
+
+  const c = ctx({ callControl: async () => ({ ok: false, reason: 'timeout' }) })
+  expect(await main(['revoke', '--all'], c.deps)).toBe(1)
 })
 
 it('空 argv 也是用法错误退 2；help 子命令打印用法退 0', async () => {
