@@ -24,6 +24,7 @@
     "host.js",
     "lock.js",
     "log.js",
+    "relay-client.js",
     "rpc.js",
     "runtime.js",
     "state.js",
