@@ -4,7 +4,7 @@
 （CLI 名 `saigai-bot`）装到一台常开机器上，让 AI bot 在浏览器关闭后继续聊天。
 三条路线任选其一：**Linux/PVE + systemd**、**NAS/Docker**、**Windows 终端**。
 
-## 先读：三条不变红线
+## 先读：四条不变红线
 
 1. **API key 只在你机器上。** 配置里写 `process.env.KUO_LLM_KEY`，不要内联明文；
    daemon 不把 key 写进 `state.json`，也不发往聊天服务器。镜像里同样不含 key。
@@ -13,6 +13,9 @@
    ——聊天记录靠房间内 P2P 历史重建，这是设计语义，不是 bug。
 3. **控制面只绑回环。** `rpc.json` 的 HTTP 控制面只监听 `127.0.0.1`，靠 secret 鉴权；
    数据目录和 rpc 文件不要暴露到公网。聊天流量走现有的 `wss://kuoluosaigai.com`。
+4. **服务器源站不要对公网开放。** P3 的设备配对限速优先用 `CF-Connecting-IP`；只有源站
+   仅经 Cloudflare Tunnel 可达时这个头才可信。源站直连可达时该头可伪造，5 次/60s/IP
+   的配对限速会退化。站方部署时请把源站端口只放行 cloudflared。
 
 ## 公共准备：配置文件
 

@@ -88,6 +88,13 @@ npm start            # 默认 http/ws://localhost:8080，平台用 PORT 环境�
 
 容器文件系统临时的平台（Render / Railway / Fly 免费版等）请把持久卷挂到 `server/data/`，或用 `KUO_ROOMS_FILE`/`KUO_DEVICES_FILE` 指到持久盘。
 
+### 配对限速的运维前提（P3a/Q8）
+
+设备配对按 IP 限速 5 次/60s，键优先 `CF-Connecting-IP`。**前提是源站端口只对
+cloudflared 开放、不对公网直接可达**；如果攻击者能绕过 Tunnel 直连源站，这个头可以
+伪造，5/IP 的限速就退化成按连接限速。部署时请把源站防火墙/安全组只放行本机或
+Tunnel 出口。
+
 ## 项目结构
 
 ```

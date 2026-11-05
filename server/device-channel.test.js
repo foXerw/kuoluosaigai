@@ -83,6 +83,11 @@ describe('server /device channel', () => {
 
     send(p, { type: 'counts', roomIds: ['setsubun'] })
     expect(await nextFrame(p.received)).toMatchObject({ type: 'counts', counts: { setsubun: 1 } })
+
+    // 参与者连接发设备帧：参与者协议不认识 t，默认分支静默忽略，绝不能切进设备通道
+    send(p, { t: 'dev-auth', role: 'daemon', token: T1 })
+    await settle()
+    expect(p.received).toEqual([])
   })
 
   it('配对落盘；server 重启后浏览器仍可用旧 token/session 认证', async () => {
@@ -98,7 +103,9 @@ describe('server /device channel', () => {
     const browser = await connect('/device')
     send(browser, { t: 'pair-claim', code: codeFrame.code, label: 'Phone' })
     const ok = await nextFrame(browser.received)
-    expect(ok).toMatchObject({ t: 'pair-ok', token: T1 })
+    expect(ok).toMatchObject({ t: 'pair-ok' })
+    expect(ok.token).toMatch(/^[a-f0-9]{64}$/)
+    expect(ok.token).not.toBe(T1) // 设备令牌不下发，浏览器只拿 session 凭证
     expect(ok.sessionId).toMatch(/^[a-f0-9]{16}$/)
     expect(fs.existsSync(devicesFile)).toBe(true)
 
@@ -107,7 +114,13 @@ describe('server /device channel', () => {
     await boot({ devicesFile })
 
     const again = await connect('/device')
-    send(again, { t: 'dev-auth', role: 'browser', token: T1, sessionId: ok.sessionId })
+    send(again, {
+      t: 'dev-auth',
+      role: 'browser',
+      token: ok.token,
+      sessionId: ok.sessionId,
+      deviceId: ok.deviceId,
+    })
     expect(await nextFrame(again.received)).toMatchObject({
       t: 'dev-auth-ok',
       role: 'browser',

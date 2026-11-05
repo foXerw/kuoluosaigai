@@ -75,8 +75,9 @@ describe('RULES_SECTIONS 内容（spec §6 大纲逐条 + §7 护栏表数值）
     expect(FLAT).toContain('街头传闻')
   })
 
-  it('世界末日彩蛋：删 rooms.log', () => {
+  it('世界末日彩蛋：删 rooms.log；设备表 devices.json 也如实披露', () => {
     expect(FLAT).toContain('rooms.log')
+    expect(FLAT).toContain('devices.json')
     expect(FLAT).toContain('世界末日')
   })
 

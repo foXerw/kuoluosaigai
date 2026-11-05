@@ -22,6 +22,7 @@ import {
   hashToken,
   deriveDeviceId,
   genSessionId,
+  genSessionToken,
   genPairCode,
 } from './devices.js'
 
@@ -52,7 +53,9 @@ function byteLen(v) {
 
 /** 递归找 apiKey 键（不扫字符串内容，避免误伤聊天文本）。JSON 帧无环，深度帽兜底。 */
 function hasApiKey(v, depth = 0) {
-  if (depth > 8 || v === null || typeof v !== 'object') return false
+  // fail-closed：嵌套超过扫描深度就当作可疑拒绝，绝不因为“太深”而放行。
+  if (depth > 8) return true
+  if (v === null || typeof v !== 'object') return false
   if (Array.isArray(v)) return v.some((x) => hasApiKey(x, depth + 1))
   if (Object.prototype.hasOwnProperty.call(v, 'apiKey')) return true
   for (const k of Object.keys(v)) {
@@ -182,14 +185,19 @@ export function createRelay({
     if ((role !== 'daemon' && role !== 'browser') || !isValidToken(frame.token)) {
       return reply(ws, { t: 'dev-auth-err' })
     }
-    const deviceId = deriveDeviceId(frame.token)
+    const tokenHash = hashToken(frame.token)
 
     if (role === 'daemon') {
+      // 设备令牌与浏览器 session 令牌是两个域：session 令牌永远不能占 daemon 槽；
+      // 已轮换的旧设备令牌进墓碑，不能再被用来重建设备（revoke 的持久化语义）。
+      if (store.isRevoked(tokenHash) || store.hasSessionToken(tokenHash)) {
+        return reply(ws, { t: 'dev-auth-err' })
+      }
+      const deviceId = deriveDeviceId(frame.token)
       const device = store.get(deviceId)
       const old = daemonByDevice.get(deviceId)
       if (old && old !== ws) {
-        const oldInfo = infoByWs.get(old)
-        if (oldInfo) oldInfo.revoked = true
+        clearPendingForWs(old)
         reply(old, { t: 'dev-replaced' })
         infoByWs.delete(old)
       }
@@ -198,20 +206,33 @@ export function createRelay({
       infoByWs.set(ws, info)
       daemonByDevice.set(deviceId, ws)
       reply(ws, { t: 'dev-auth-ok', role: 'daemon', deviceId, name, paired: !!device })
+      if (device) broadcast(deviceId, { t: 'dev-online', deviceId })
       return
     }
 
+    // 浏览器：token 是配对时服务器签发的 session 凭证，不是 daemon 设备令牌。
+    const deviceId = typeof frame.deviceId === 'string' ? frame.deviceId : ''
     const sessionId = frame.sessionId
     const device = store.get(deviceId)
+    const session = device && Object.prototype.hasOwnProperty.call(device.sessions, sessionId)
+      ? device.sessions[sessionId]
+      : null
     const ok = device &&
       SESSION_RE.test(String(sessionId || '')) &&
-      device.tokenHash === hashToken(frame.token) &&
-      Object.prototype.hasOwnProperty.call(device.sessions, sessionId)
+      session &&
+      session.tokenHash === tokenHash
     if (!ok) return reply(ws, { t: 'dev-auth-err' })
 
     infoByWs.set(ws, { role: 'browser', deviceId, sessionId })
     addBrowser(ws, deviceId, sessionId)
-    reply(ws, { t: 'dev-auth-ok', role: 'browser', deviceId, name: device.name, paired: true })
+    reply(ws, {
+      t: 'dev-auth-ok',
+      role: 'browser',
+      deviceId,
+      name: device.name,
+      paired: true,
+      online: daemonByDevice.has(deviceId),
+    })
     const cached = stateByDevice.get(deviceId)
     if (cached) reply(ws, { t: 'dev-state', deviceId, state: cached.state, ts: cached.ts })
     if (!daemonByDevice.has(deviceId)) reply(ws, { t: 'dev-offline', deviceId })
@@ -229,7 +250,7 @@ export function createRelay({
 
     pending.set(code, {
       deviceId: info.deviceId,
-      token: info.token,
+      tokenHash: hashToken(info.token),
       name: info.name,
       ws,
       expiresAt: now() + pairTtlMs,
@@ -253,7 +274,7 @@ export function createRelay({
     pending.delete(code) // 一次性：无论后续成败都不许再用
 
     const device = store.get(p.deviceId)
-    if (device && device.tokenHash !== hashToken(p.token)) return reply(ws, { t: 'pair-error' })
+    if (device && device.tokenHash !== p.tokenHash) return reply(ws, { t: 'pair-error' })
     const sessions = device ? device.sessions : {}
     if (Object.keys(sessions).length >= sessionCap) return reply(ws, { t: 'pair-error' })
 
@@ -263,15 +284,24 @@ export function createRelay({
     }
     if (Object.prototype.hasOwnProperty.call(sessions, sessionId)) return reply(ws, { t: 'pair-error' })
 
+    // 浏览器拿的是独立的 session 凭证；daemon 设备令牌永不下发。
+    const sessionToken = genSessionToken()
     const base = device || {
       deviceId: p.deviceId,
-      tokenHash: hashToken(p.token),
+      tokenHash: p.tokenHash,
       name: p.name,
       createdAt: now(),
     }
     const next = {
       ...base,
-      sessions: { ...sessions, [sessionId]: { label: cleanLabel(frame.label), createdAt: now() } },
+      sessions: {
+        ...sessions,
+        [sessionId]: {
+          label: cleanLabel(frame.label),
+          createdAt: now(),
+          tokenHash: hashToken(sessionToken),
+        },
+      },
     }
     try {
       store.upsert(p.deviceId, next)
@@ -279,7 +309,13 @@ export function createRelay({
       return reply(ws, { t: 'error', msg: 'devices write failed' })
     }
 
-    reply(ws, { t: 'pair-ok', deviceId: p.deviceId, name: next.name, token: p.token, sessionId })
+    reply(ws, {
+      t: 'pair-ok',
+      deviceId: p.deviceId,
+      name: next.name,
+      token: sessionToken,
+      sessionId,
+    })
 
     // 认领者立即成为该 session 的浏览器，无需再发 dev-auth（少一次往返）。
     infoByWs.set(ws, { role: 'browser', deviceId: p.deviceId, sessionId })
@@ -299,6 +335,10 @@ export function createRelay({
   function devState(ws, frame) {
     const info = infoByWs.get(ws)
     if (!info || info.role !== 'daemon') return reply(ws, { t: 'error', msg: 'unauthorized' })
+    const device = store.get(info.deviceId)
+    if (!device || device.tokenHash !== hashToken(info.token)) {
+      return reply(ws, { t: 'error', msg: 'not paired' })
+    }
     if (!isObject(frame.state) || hasApiKey(frame.state)) {
       return reply(ws, { t: 'error', msg: 'bad frame' })
     }
@@ -385,11 +425,13 @@ export function createRelay({
       sessions: {},
     }
     try {
-      store.upsert(newId, next)
-      store.remove(oldId)
+      // 单次持久化：删旧 + 加新 + 旧令牌墓碑，失败内存回滚（不会出现双行/幽灵设备）。
+      store.rotate(oldId, newId, next, hashToken(info.token))
     } catch (e) {
-      return reply(ws, { t: 'error', msg: 'devices write failed' })
+      return reply(ws, { t: 'dev-revoke-err' })
     }
+    stateByDevice.delete(oldId)
+    stateByDevice.delete(newId)
 
     clearPendingForDevice(oldId)
     const set = browsersByDevice.get(oldId)
@@ -457,6 +499,7 @@ export function createRelay({
       clearPendingForWs(ws)
       if (info.role === 'daemon') {
         if (daemonByDevice.get(info.deviceId) === ws) daemonByDevice.delete(info.deviceId)
+        stateByDevice.delete(info.deviceId) // 不把无主缓存留给下一位（也防无界增长）
         broadcast(info.deviceId, { t: 'dev-offline', deviceId: info.deviceId })
       } else if (info.role === 'browser') {
         removeBrowser(ws, info.deviceId)

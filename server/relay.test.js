@@ -55,9 +55,9 @@ function claim(code, label = 'Phone', ip = IP) {
   return ws
 }
 
-function authBrowser(token, sessionId, ip = '2.2.2.2') {
+function authBrowser(token, sessionId, deviceId = D1, ip = '2.2.2.2') {
   const ws = mkWs()
-  relay.handle(ws, { t: 'dev-auth', role: 'browser', token, sessionId }, { ip })
+  relay.handle(ws, { t: 'dev-auth', role: 'browser', token, sessionId, deviceId }, { ip })
   return ws
 }
 
@@ -94,19 +94,31 @@ describe('dev-auth', () => {
     expect(last(c)).toEqual({ t: 'error', msg: 'unauthorized' })
   })
 
-  it('browser 必须 token + 已配对 session；错任一 → 同一 dev-auth-err', () => {
+  it('browser 必须 session token + sessionId + deviceId；错任一 → 同一 dev-auth-err', () => {
     const daemon = authDaemon()
     const code = makeCode(daemon)
     const browser = claim(code)
-    const { sessionId } = last(browser)
+    const { sessionId, token: sessionToken } = last(browser)
+    expect(sessionToken).not.toBe(T1) // 设备令牌永不下发
 
-    const ok = authBrowser(T1, sessionId)
-    expect(last(ok)).toMatchObject({ t: 'dev-auth-ok', role: 'browser', deviceId: D1 })
+    const ok = authBrowser(sessionToken, sessionId)
+    expect(last(ok)).toMatchObject({ t: 'dev-auth-ok', role: 'browser', deviceId: D1, online: true })
 
-    const badSession = authBrowser(T1, '0'.repeat(16))
+    const badSession = authBrowser(sessionToken, '0'.repeat(16))
     expect(last(badSession)).toEqual({ t: 'dev-auth-err' })
     const badToken = authBrowser(T2, sessionId)
     expect(last(badToken)).toEqual({ t: 'dev-auth-err' })
+    const wrongDevice = authBrowser(sessionToken, sessionId, 'ffffffffffffffff')
+    expect(last(wrongDevice)).toEqual({ t: 'dev-auth-err' })
+  })
+
+  it('浏览器 session token 不能冒充 daemon', () => {
+    const daemon = authDaemon()
+    const browser = claim(makeCode(daemon))
+    const sessionToken = last(browser).token
+    const impostor = mkWs()
+    relay.handle(impostor, { t: 'dev-auth', role: 'daemon', token: sessionToken }, { ip: IP })
+    expect(last(impostor)).toEqual({ t: 'dev-auth-err' })
   })
 })
 
@@ -119,13 +131,17 @@ describe('配对', () => {
 
     const browser = claim(code)
     const ok = last(browser)
-    expect(ok).toMatchObject({ t: 'pair-ok', deviceId: D1, name: 'lab-vm', token: T1 })
+    expect(ok).toMatchObject({ t: 'pair-ok', deviceId: D1, name: 'lab-vm' })
+    expect(ok.token).toMatch(/^[a-f0-9]{64}$/)
+    expect(ok.token).not.toBe(T1) // 浏览器只拿 session 凭证
+    expect(JSON.stringify(ok)).not.toContain(T1)
     expect(ok.sessionId).toMatch(/^[a-f0-9]{16}$/)
     expect(last(daemon)).toEqual({ t: 'paired', deviceId: D1, sessionId: ok.sessionId })
 
     const saved = store.get(D1)
     expect(saved.tokenHash).toBe(hashToken(T1))
     expect(saved.sessions[ok.sessionId].label).toBe('Phone')
+    expect(saved.sessions[ok.sessionId].tokenHash).toBe(hashToken(ok.token))
   })
 
   it('同码二次 claim / 过期码 / 未知码 → 同一 pair-error', () => {
@@ -169,18 +185,18 @@ describe('控制帧路由', () => {
     const daemon = authDaemon()
     const code = makeCode(daemon)
     const browser = claim(code)
-    const { sessionId } = last(browser)
-    const b2 = authBrowser(T1, sessionId)
-    return { daemon, browser, b2, sessionId }
+    const { sessionId, token: sessionToken } = last(browser)
+    const b2 = authBrowser(sessionToken, sessionId)
+    return { daemon, browser, b2, sessionId, sessionToken }
   }
 
   it('dev-state 缓存并广播给该设备所有浏览器；后连接的浏览器收到缓存', () => {
-    const { daemon, browser, sessionId } = paired()
+    const { daemon, browser, sessionId, sessionToken } = paired()
     relay.handle(daemon, { t: 'dev-state', state: { bots: [{ id: 'a' }] } }, { ip: IP })
     expect(last(browser)).toMatchObject({ t: 'dev-state', deviceId: D1, state: { bots: [{ id: 'a' }] } })
     expect(last(browser).ts).toBe(0)
 
-    const late = authBrowser(T1, sessionId)
+    const late = authBrowser(sessionToken, sessionId)
     expect(late.sent.map((f) => f.t)).toEqual(['dev-auth-ok', 'dev-state'])
   })
 
@@ -222,16 +238,55 @@ describe('控制帧路由', () => {
     relay.onClose(browser)
     expect(store.get(D1).sessions[sessionId]).toBeTruthy()
   })
+
+  it('apiKey 深度嵌套也 fail-closed（不能被埋深绕过）', () => {
+    const { daemon, browser } = paired()
+    let deep = { apiKey: 'sk-x' }
+    for (let i = 0; i < 10; i++) deep = { x: deep }
+    relay.handle(daemon, { t: 'dev-state', state: deep }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'error', msg: 'bad frame' })
+    expect(types(browser)).not.toContain('dev-state')
+  })
+
+  it('同设备新 daemon 接管：旧连接收 dev-replaced，旧挂起码作废', () => {
+    const a = authDaemon()
+    const code = makeCode(a)
+    const b = authDaemon()
+    expect(last(a)).toEqual({ t: 'dev-replaced' })
+    expect(last(b)).toMatchObject({ t: 'dev-auth-ok', role: 'daemon' })
+    expect(last(claim(code))).toEqual({ t: 'pair-error' })
+    relay.handle(a, { t: 'dev-state', state: { n: 1 } }, { ip: IP })
+    expect(last(a)).toEqual({ t: 'error', msg: 'unauthorized' })
+  })
+
+  it('未配对 daemon 不能推 dev-state（缓存不接受无主写入）', () => {
+    const daemon = authDaemon()
+    relay.handle(daemon, { t: 'dev-state', state: { bots: [] } }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'error', msg: 'not paired' })
+  })
+
+  it('daemon 断开清缓存；重连向浏览器广播 dev-online', () => {
+    const { daemon, browser, sessionToken, sessionId } = paired()
+    relay.handle(daemon, { t: 'dev-state', state: { n: 1 } }, { ip: IP })
+    expect(last(browser).t).toBe('dev-state')
+    relay.onClose(daemon)
+
+    const late = authBrowser(sessionToken, sessionId)
+    expect(late.sent.map((f) => f.t)).toEqual(['dev-auth-ok', 'dev-offline']) // 缓存已清
+
+    authDaemon()
+    expect(last(browser)).toEqual({ t: 'dev-online', deviceId: D1 })
+  })
 })
 
 describe('会话列表与撤销', () => {
   function twoSessions() {
     const daemon = authDaemon()
     const b1 = claim(makeCode(daemon), 'PC')
-    const s1 = last(b1).sessionId
+    const o1 = last(b1)
     const b2 = claim(makeCode(daemon), 'Phone')
-    const s2 = last(b2).sessionId
-    return { daemon, b1, b2, s1, s2 }
+    const o2 = last(b2)
+    return { daemon, b1, b2, s1: o1.sessionId, s2: o2.sessionId, t1: o1.token, t2: o2.token }
   }
 
   it('dev-sessions 列两个会话并标在线', () => {
@@ -246,7 +301,7 @@ describe('会话列表与撤销', () => {
   })
 
   it('撤销单个会话：目标收 dev-revoked 并断开，不能重连；其他 session 不受影响', () => {
-    const { b1, b2, s1, s2 } = twoSessions()
+    const { b1, b2, s1, s2, t1, t2 } = twoSessions()
     relay.handle(b1, { t: 'dev-session-revoke', id: 'r1', sessionId: s2 }, { ip: IP })
     expect(last(b1)).toEqual({ t: 'dev-res', id: 'r1', ok: true, err: null })
     expect(last(b2)).toEqual({ t: 'dev-revoked' })
@@ -254,8 +309,8 @@ describe('会话列表与撤销', () => {
     expect(store.get(D1).sessions[s2]).toBeUndefined()
     expect(store.get(D1).sessions[s1]).toBeTruthy()
 
-    expect(last(authBrowser(T1, s2))).toEqual({ t: 'dev-auth-err' })
-    expect(last(authBrowser(T1, s1))).toMatchObject({ t: 'dev-auth-ok', role: 'browser' })
+    expect(last(authBrowser(t2, s2))).toEqual({ t: 'dev-auth-err' })
+    expect(last(authBrowser(t1, s1))).toMatchObject({ t: 'dev-auth-ok', role: 'browser' })
   })
 
   it('revoke-all：旧 token/session 全线失效，新 token 重新配对可用', () => {
@@ -263,6 +318,7 @@ describe('会话列表与撤销', () => {
     const oldCode = makeCode(daemon)
     const b1 = claim(oldCode)
     const oldSession = last(b1).sessionId
+    const oldSessionToken = last(b1).token
     const b2 = claim(makeCode(daemon))
     const staleCode = makeCode(daemon) // 轮换前挂起的配对码必须作废
 
@@ -277,12 +333,17 @@ describe('会话列表与撤销', () => {
     expect(store.get(D1)).toBe(null)
     expect(store.get(D3).sessions).toEqual({})
     expect(last(claim(staleCode))).toEqual({ t: 'pair-error' })
-    expect(last(authBrowser(T1, oldSession))).toEqual({ t: 'dev-auth-err' })
+    expect(last(authBrowser(oldSessionToken, oldSession, D3))).toEqual({ t: 'dev-auth-err' })
+    // 旧 daemon 令牌进墓碑：不能再用它认证/重建设备
+    const oldDaemon = mkWs()
+    relay.handle(oldDaemon, { t: 'dev-auth', role: 'daemon', token: T1 }, { ip: IP })
+    expect(last(oldDaemon)).toEqual({ t: 'dev-auth-err' })
 
-    // daemon 已换 key：用新设备身份重新发码，新浏览器可用新 token 配对
+    // daemon 已换 key：用新设备身份重新发码，新浏览器拿新的 session 凭证
     const code2 = makeCode(daemon)
     const fresh = claim(code2)
-    expect(last(fresh)).toMatchObject({ t: 'pair-ok', deviceId: D3, token: T3 })
+    expect(last(fresh)).toMatchObject({ t: 'pair-ok', deviceId: D3 })
+    expect(last(fresh).token).not.toBe(T3)
     relay.handle(daemon, { t: 'dev-state', state: { ok: 1 } }, { ip: IP })
     expect(last(fresh)).toMatchObject({ t: 'dev-state', state: { ok: 1 } })
   })

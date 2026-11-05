@@ -49,12 +49,13 @@ describe('token helpers', () => {
 })
 
 describe('createDeviceStore', () => {
+  const S1 = 'f'.repeat(64)
   const device = (over = {}) => ({
     deviceId: deriveDeviceId(T1),
     tokenHash: hashToken(T1),
     name: 'lab-vm',
     createdAt: 100,
-    sessions: { s1: { label: 'PC', createdAt: 200 } },
+    sessions: { s1: { label: 'PC', createdAt: 200, tokenHash: hashToken(S1) } },
     ...over,
   })
 
@@ -99,9 +100,10 @@ describe('createDeviceStore', () => {
       deviceId: 'spoofed',
       name: 'x'.repeat(100),
       sessions: {
-        ok: { label: 'y'.repeat(50), createdAt: 5 },
+        ok: { label: 'y'.repeat(50), createdAt: 5, tokenHash: hashToken(S1) },
         bad: 'nope',
-        alsoBad: { label: 'z', createdAt: 'later' },
+        alsoBad: { label: 'z', createdAt: 'later', tokenHash: hashToken(S1) },
+        noToken: { label: 'q', createdAt: 7 }, // 无凭证的旧形状必须丢弃
       },
     })
     store.upsert(d.deviceId, d)
@@ -109,6 +111,7 @@ describe('createDeviceStore', () => {
     expect(got.deviceId).toBe(d.deviceId)
     expect(got.name.length).toBe(64)
     expect(got.sessions.ok.label.length).toBe(32)
+    expect(got.sessions.ok.tokenHash).toBe(hashToken(S1))
     expect(Object.keys(got.sessions)).toEqual(['ok'])
   })
 
@@ -116,5 +119,54 @@ describe('createDeviceStore', () => {
     const store = createDeviceStore({ file })
     expect(() => store.upsert('d', { tokenHash: 'nope', name: 'x', sessions: {} })).toThrow(TypeError)
     expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it('get 返回深拷贝，改不到内部状态', () => {
+    const store = createDeviceStore({ file })
+    const d = device()
+    store.upsert(d.deviceId, d)
+    const got = store.get(d.deviceId)
+    got.sessions.s1.label = 'MUTATED'
+    expect(store.get(d.deviceId).sessions.s1.label).toBe('PC')
+  })
+
+  it('rotate：一次持久化完成删旧/加新/墓碑', () => {
+    const store = createDeviceStore({ file })
+    const oldId = deriveDeviceId(T1)
+    store.upsert(oldId, device())
+    const newId = deriveDeviceId(T2)
+    store.rotate(oldId, newId, {
+      deviceId: newId,
+      tokenHash: hashToken(T2),
+      name: 'lab-vm',
+      createdAt: 100,
+      sessions: {},
+    }, hashToken(T1))
+
+    expect(store.get(oldId)).toBe(null)
+    expect(store.get(newId)).toMatchObject({ deviceId: newId, tokenHash: hashToken(T2) })
+    expect(store.isRevoked(hashToken(T1))).toBe(true)
+    expect(store.listRevoked()).toEqual([hashToken(T1)])
+    expect(store.hasSessionToken(hashToken(S1))).toBe(false) // 旧会话随设备删除
+    expect(createDeviceStore({ file }).isRevoked(hashToken(T1))).toBe(true)
+  })
+
+  it('rotate 写失败：内存完整回滚，不留幽灵 newId / 不误删 oldId', () => {
+    const id = deriveDeviceId(T1)
+    createDeviceStore({ file }).upsert(id, device())
+    const failing = createDeviceStore({ file, writeFileImpl: () => { throw new Error('EIO') } })
+    const newId = deriveDeviceId(T2)
+    expect(() => failing.rotate(id, newId, {
+      deviceId: newId,
+      tokenHash: hashToken(T2),
+      name: 'lab-vm',
+      createdAt: 100,
+      sessions: {},
+    }, hashToken(T1))).toThrow(/EIO/)
+
+    expect(failing.get(id)).toBeTruthy()
+    expect(failing.get(newId)).toBe(null)
+    expect(failing.isRevoked(hashToken(T1))).toBe(false)
+    expect(failing.listRevoked()).toEqual([])
   })
 })

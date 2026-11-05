@@ -493,18 +493,30 @@ ECDH 配对（密钥交换 + 面板侧加密），代价是配对流程复杂一
 - 设备通道是同一端口上的 `/device` WS 路径；设备连接**不发 assign、不进 clients/rooms、
   不计在线、不进历史帧流**。参与者协议逐字节不变。
 - 令牌 64 位 hex；`deviceId = sha256(token) 前 16 hex`（R30）；`devices.json` 只存
-  `sha256(token)`，明文只在内存中用于 `pair-ok`。`KUO_DEVICES_FILE` 可覆盖路径。
+  `sha256(token)`，daemon 设备令牌**永不下发**。`KUO_DEVICES_FILE` 可覆盖路径。
+- **凭证分域（安全修，终审 Critical）**：daemon 槽只认设备令牌；浏览器槽只认配对时
+  服务器签发的 **session 凭证**（`pair-ok.token`，64 hex）+ `sessionId` + `deviceId`。
+  浏览器即使拿到自己的 session 凭证也不能冒充 daemon；device 令牌与 session 令牌的
+  hash 分域校验，session 令牌进不了 `dev-auth role:'daemon'`。
 - 配对：已认证 daemon 发 `pair-new` → 6 位码（60s、一次性、5 次/60s/IP）→ 浏览器
-  `pair-claim{code,label}` → `pair-ok{deviceId,name,token,sessionId}`。认领连接立即成为
-  该 session 的浏览器；同码二次/过期/未知/超会话上限全部同一 `pair-error`。
+  `pair-claim{code,label}` → `pair-ok{deviceId,name,token,sessionId}`（token 是 session
+  凭证）。认领连接立即成为该 session 的浏览器；同码二次/过期/未知/超会话上限全部同一
+  `pair-error`。
 - 路由：`dev-cmd` 只投递到同 `deviceId` 的 daemon；`dev-res`/`dev-state` 只广播给该
-  设备的浏览器；`dev-state` 缓存供后连接浏览器取用。
-- Q5(a)：任何帧的 `state`/`args` 出现 `apiKey` 键即拒（服务端层；P3b daemon 侧再兜底）。
+  设备的浏览器；`dev-state` 缓存供后连接浏览器取用，daemon 断开即清（不服务无主缓存）。
+- 在线信号：浏览器 `dev-auth-ok` 带 `online`；daemon 上线向该设备浏览器广播 `dev-online`，
+  断开广播 `dev-offline`。
+- Q5(a)：任何帧的 `state`/`args` 出现 `apiKey` 键即拒（**深度超扫描帽也 fail-closed**；
+  服务端层；P3b daemon 侧再兜底）。
 - 撤销：`dev-session-revoke` 移除单个 session 并断开对应浏览器；`dev-revoke-all{newToken}`
-  轮换 token/deviceId、清空所有 session、作废挂起配对码、旧浏览器收 `dev-revoked`。
+  单次持久化完成「删旧设备 + 加新设备 + 旧设备令牌进墓碑」，轮换 token/deviceId、清空
+  所有 session、作废挂起配对码、旧浏览器收 `dev-revoked`；旧设备令牌因墓碑不能再认证。
+- 帧补充：`dev-replaced`（同设备新 daemon 接管旧连接）、`dev-online`、`dev-revoke-err`、
+  通用 `{t:'error',msg}`；这些 P3b 需要处理（`dev-replaced` = 停止并重新认证）。
 - 限速：每连接 120 帧/60s；`pair-new` 5/60s；配对认领 5/60s/IP（优先
   `CF-Connecting-IP`，前提是源站端口不对公网开放——Q8）。
-- 测试：server 39 → 71（含 `devices`/`relay`/真实 WS `/device`/跨重启/CF-IP 限速）。
+- 测试：server 39 → 79（含 `devices`/`relay`/真实 WS `/device`/跨重启/CF-IP 限速/
+  凭证分域/墓碑/深度 apiKey/缓存驱逐/daemon 接管）。全量 733 → 773。
 
 **未完成（P3b/P3c）**：daemon 设备客户端与本地 rpc 的 pair/revoke、浏览器远端 deck 面板、
 手机 4G 实测；`state.json` 的 room override（R20）归 P3b。**真实 Cloudflare Tunnel +

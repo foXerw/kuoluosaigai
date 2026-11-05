@@ -36,6 +36,11 @@ export function genSessionId() {
   return crypto.randomBytes(8).toString('hex') // 16 hex
 }
 
+/** 浏览器 session 凭证（64 hex）：与 daemon 设备令牌分域，浏览器永远拿不到 daemon token。 */
+export function genSessionToken() {
+  return crypto.randomBytes(32).toString('hex')
+}
+
 export function genPairCode() {
   let s = ''
   for (let i = 0; i < 6; i++) s += PAIR_CHARS[crypto.randomInt(0, PAIR_CHARS.length)]
@@ -62,9 +67,23 @@ function cleanSessions(v) {
     if (!isObject(s)) continue
     const createdAt = Number(s.createdAt)
     if (!Number.isFinite(createdAt)) continue
-    out[id] = { label: cleanName(s.label).slice(0, MAX_LABEL), createdAt }
+    // P3 安全修：session 必须有独立的 tokenHash；没有凭证的旧形状一律丢弃（fail-closed）。
+    if (typeof s.tokenHash !== 'string' || !TOKEN_RE.test(s.tokenHash)) continue
+    out[id] = { label: cleanName(s.label).slice(0, MAX_LABEL), createdAt, tokenHash: s.tokenHash }
   }
   return out
+}
+
+function cleanRevoked(v) {
+  if (!Array.isArray(v)) return []
+  const seen = new Set()
+  const out = []
+  for (const h of v) {
+    if (typeof h !== 'string' || !TOKEN_RE.test(h) || seen.has(h)) continue
+    seen.add(h)
+    out.push(h)
+  }
+  return out.slice(-50)
 }
 
 /** 严格净化（写路径）：tokenHash 非法是编程错误 → TypeError。 */
@@ -83,8 +102,9 @@ function sanitizeDevice(deviceId, d) {
 
 /** 宽松净化（读路径）：任何坏条目直接丢弃，绝不抛。 */
 function sanitizeDoc(doc) {
-  const out = { version: DEVICES_VERSION, devices: {} }
+  const out = { version: DEVICES_VERSION, devices: {}, revokedTokens: [] }
   if (!isObject(doc) || !isObject(doc.devices)) return out
+  out.revokedTokens = cleanRevoked(doc.revokedTokens)
   for (const [deviceId, d] of Object.entries(doc.devices)) {
     if (!isObject(d) || typeof d.tokenHash !== 'string' || !TOKEN_RE.test(d.tokenHash)) continue
     out.devices[deviceId] = {
@@ -109,7 +129,9 @@ function readDoc(file) {
 
 function cloneDevice(d) {
   if (!d) return null
-  return { ...d, sessions: { ...d.sessions } }
+  const sessions = {}
+  for (const [id, s] of Object.entries(d.sessions)) sessions[id] = { ...s }
+  return { ...d, sessions }
 }
 
 /**
@@ -118,7 +140,10 @@ function cloneDevice(d) {
  * @returns {{ path: string, list: Function, get: Function, findByToken: Function,
  *   upsert: Function, remove: Function }}
  */
-export function createDeviceStore({ file }) {
+export function createDeviceStore({
+  file,
+  writeFileImpl = (tmp, text) => fs.writeFileSync(tmp, text), // 测试注入：模拟写失败
+}) {
   let doc = readDoc(file)
 
   function persist() {
@@ -127,7 +152,7 @@ export function createDeviceStore({ file }) {
     const tmp = file + '.tmp'
     let moved = false
     try {
-      fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n')
+      writeFileImpl(tmp, JSON.stringify(doc, null, 2) + '\n')
       fs.renameSync(tmp, file)
       moved = true
     } finally {
@@ -156,6 +181,45 @@ export function createDeviceStore({ file }) {
         if (d.tokenHash === h) return cloneDevice(d)
       }
       return null
+    },
+    isRevoked(hash) {
+      return typeof hash === 'string' && doc.revokedTokens.includes(hash)
+    },
+    hasSessionToken(hash) {
+      if (typeof hash !== 'string') return false
+      for (const d of Object.values(doc.devices)) {
+        for (const s of Object.values(d.sessions)) if (s.tokenHash === hash) return true
+      }
+      return false
+    },
+    listRevoked() {
+      return [...doc.revokedTokens]
+    },
+    /**
+     * 原子轮换：删旧设备、加新设备、追加旧令牌墓碑，**一次 persist**。
+     * 写失败时内存回滚到调用前，调用方不会留下幽灵 newId/丢失 oldId。
+     */
+    rotate(oldId, newId, device, revokeHash = null) {
+      const hadOld = Object.prototype.hasOwnProperty.call(doc.devices, oldId)
+      const hadNew = Object.prototype.hasOwnProperty.call(doc.devices, newId)
+      const prevOld = doc.devices[oldId]
+      const prevNew = doc.devices[newId]
+      const prevRevoked = doc.revokedTokens
+      const next = sanitizeDevice(newId, device)
+      delete doc.devices[oldId]
+      doc.devices[newId] = next
+      if (revokeHash) doc.revokedTokens = cleanRevoked([...doc.revokedTokens, revokeHash])
+      try {
+        persist()
+      } catch (e) {
+        if (hadOld) doc.devices[oldId] = prevOld
+        else delete doc.devices[oldId]
+        if (hadNew) doc.devices[newId] = prevNew
+        else delete doc.devices[newId]
+        doc.revokedTokens = prevRevoked
+        throw e
+      }
+      return cloneDevice(doc.devices[newId])
     },
     upsert(deviceId, device) {
       if (typeof deviceId !== 'string' || !deviceId) throw new TypeError('devices: invalid deviceId')
