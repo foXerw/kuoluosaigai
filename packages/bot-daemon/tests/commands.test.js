@@ -145,10 +145,14 @@ describe('buildDevState / keyHintOf', () => {
     const state = buildDevState({
       snapshot,
       provider: { id: 'daemon', name: 'daemon', baseUrl: 'https://api.example/v1', apiKey: 'sk-1234567890abcdef' },
+      configBots: [{ id: 'bot-a', persona: '毒舌', chattiness: 70, temperature: 1.1, model: 'deepseek-chat' }],
     })
     expect(JSON.stringify(state)).not.toContain('sk-1234567890abcdef')
     expect(state.providers[0].keyHint).toBe('****cdef')
-    expect(state.bots[0]).toMatchObject({ id: 'bot-a', room: 'nebula', status: 'open' })
+    expect(state.bots[0]).toMatchObject({
+      id: 'bot-a', room: 'nebula', status: 'open',
+      persona: '毒舌', chattiness: 70, temperature: 1.1, model: 'deepseek-chat', providerId: 'daemon',
+    })
     expect(state.at).toBe(123)
   })
 })

@@ -270,6 +270,7 @@ export function createDaemonHost({
     return link.pushState(buildDevState({
       snapshot: snapshot(),
       provider: { ...provider, apiKey: resolveApiKey(provider) },
+      configBots: current.bots, // 非敏感定义字段（persona/话痨度…）；apiKey 不在配置 bot 里
     }))
   }
 

@@ -56,18 +56,31 @@ export function keyHintOf(apiKey) {
  * 远端 dev-state 投影：只带运行态与 keyHint，绝不含 apiKey。
  * @param {{ snapshot: object, provider?: object }} opts
  */
-export function buildDevState({ snapshot, provider } = {}) {
+export function buildDevState({ snapshot, provider, configBots } = {}) {
   const p = provider || {}
-  const bots = ((snapshot && snapshot.bots) || []).map((b) => ({
-    id: b.id,
-    name: b.name,
-    room: b.room,
-    status: b.status,
-    nick: b.nick,
-    hourCount: b.hourCount,
-    session: { ...(b.session || {}) },
-    lifetime: { ...(b.lifetime || {}) },
-  }))
+  const cfgById = new Map()
+  for (const c of Array.isArray(configBots) ? configBots : []) {
+    if (c && typeof c.id === 'string') cfgById.set(c.id, c)
+  }
+  const bots = ((snapshot && snapshot.bots) || []).map((b) => {
+    const c = cfgById.get(b.id) || {}
+    // 远端编辑需要的非敏感定义字段；apiKey 永不在其中。
+    return {
+      id: b.id,
+      name: b.name,
+      room: b.room,
+      status: b.status,
+      nick: b.nick,
+      hourCount: b.hourCount,
+      session: { ...(b.session || {}) },
+      lifetime: { ...(b.lifetime || {}) },
+      persona: typeof c.persona === 'string' ? c.persona : '',
+      chattiness: Number.isFinite(c.chattiness) ? c.chattiness : 50,
+      temperature: Number.isFinite(c.temperature) ? c.temperature : 0.9,
+      model: typeof c.model === 'string' ? c.model : '',
+      providerId: DAEMON_PROVIDER_ID,
+    }
+  })
   return {
     bots,
     providers: [{
