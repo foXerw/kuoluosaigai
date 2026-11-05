@@ -33,9 +33,9 @@ describe('server /device channel', () => {
     return { devicesFile: path.join(TMP_ROOT, `devices-${id}.json`) }
   }
 
-  function connect(pathname = '') {
+  function connect(pathname = '', options = {}) {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url + pathname)
+      const ws = new WebSocket(url + pathname, options)
       const received = []
       ws.on('message', (raw) => received.push(JSON.parse(raw.toString())))
       ws.on('error', reject)
@@ -120,5 +120,31 @@ describe('server /device channel', () => {
     const b = await connect('/device')
     send(b, { t: 'dev-auth', role: 'browser', token: T1, sessionId: '0'.repeat(16) })
     expect(await nextFrame(b.received)).toEqual({ t: 'dev-auth-err' })
+  })
+
+  it('配对限速键优先 CF-Connecting-IP（Q8）', async () => {
+    await boot({ relayOpts: { pairClaimLimit: 1 } })
+    const daemon = await connect('/device')
+    send(daemon, { t: 'dev-auth', role: 'daemon', token: T1, name: 'lab-vm' })
+    await nextFrame(daemon.received)
+
+    send(daemon, { t: 'pair-new' })
+    const c1 = (await nextFrame(daemon.received)).code
+
+    const ipA = { headers: { 'cf-connecting-ip': '9.9.9.9' } }
+    const b1 = await connect('/device', ipA)
+    send(b1, { t: 'pair-claim', code: c1, label: 'PC' })
+    expect((await nextFrame(b1.received)).t).toBe('pair-ok')
+
+    await nextFrame(daemon.received) // b1 认领成功后的 paired 通知；别把它当成 pair-code
+    send(daemon, { t: 'pair-new' }) // 用掉 c1 后再要第二个码（pair-new 会替换旧码）
+    const c2 = (await nextFrame(daemon.received)).code
+    const b2 = await connect('/device', ipA)
+    send(b2, { t: 'pair-claim', code: c2, label: 'Phone' })
+    expect((await nextFrame(b2.received)).t).toBe('pair-error') // 同 IP 已用满
+
+    const b3 = await connect('/device', { headers: { 'cf-connecting-ip': '8.8.8.8' } })
+    send(b3, { t: 'pair-claim', code: c2, label: 'Phone' })
+    expect((await nextFrame(b3.received)).t).toBe('pair-ok') // 换 IP 不受影响；码未被消耗
   })
 })

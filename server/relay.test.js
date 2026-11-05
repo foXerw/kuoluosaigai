@@ -224,6 +224,86 @@ describe('控制帧路由', () => {
   })
 })
 
+describe('会话列表与撤销', () => {
+  function twoSessions() {
+    const daemon = authDaemon()
+    const b1 = claim(makeCode(daemon), 'PC')
+    const s1 = last(b1).sessionId
+    const b2 = claim(makeCode(daemon), 'Phone')
+    const s2 = last(b2).sessionId
+    return { daemon, b1, b2, s1, s2 }
+  }
+
+  it('dev-sessions 列两个会话并标在线', () => {
+    const { b1, s1, s2 } = twoSessions()
+    relay.handle(b1, { t: 'dev-sessions', id: 'q1' }, { ip: IP })
+    const res = last(b1)
+    expect(res.t).toBe('dev-sessions-res')
+    expect(res.id).toBe('q1')
+    expect(res.sessions.map((s) => s.sessionId)).toEqual([s1, s2])
+    expect(res.sessions.every((s) => s.online === true)).toBe(true)
+    expect(res.sessions.map((s) => s.label)).toEqual(['PC', 'Phone'])
+  })
+
+  it('撤销单个会话：目标收 dev-revoked 并断开，不能重连；其他 session 不受影响', () => {
+    const { b1, b2, s1, s2 } = twoSessions()
+    relay.handle(b1, { t: 'dev-session-revoke', id: 'r1', sessionId: s2 }, { ip: IP })
+    expect(last(b1)).toEqual({ t: 'dev-res', id: 'r1', ok: true, err: null })
+    expect(last(b2)).toEqual({ t: 'dev-revoked' })
+    expect(b2.closed).toEqual({ code: 4003, reason: 'revoked' })
+    expect(store.get(D1).sessions[s2]).toBeUndefined()
+    expect(store.get(D1).sessions[s1]).toBeTruthy()
+
+    expect(last(authBrowser(T1, s2))).toEqual({ t: 'dev-auth-err' })
+    expect(last(authBrowser(T1, s1))).toMatchObject({ t: 'dev-auth-ok', role: 'browser' })
+  })
+
+  it('revoke-all：旧 token/session 全线失效，新 token 重新配对可用', () => {
+    const daemon = authDaemon()
+    const oldCode = makeCode(daemon)
+    const b1 = claim(oldCode)
+    const oldSession = last(b1).sessionId
+    const b2 = claim(makeCode(daemon))
+    const staleCode = makeCode(daemon) // 轮换前挂起的配对码必须作废
+
+    const T3 = 'd'.repeat(64)
+    const D3 = deriveDeviceId(T3)
+    relay.handle(daemon, { t: 'dev-revoke-all', newToken: T3 }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'dev-revoke-ok', deviceId: D3 })
+
+    expect(last(b1)).toEqual({ t: 'dev-revoked' })
+    expect(last(b2)).toEqual({ t: 'dev-revoked' })
+    expect(b1.closed.code).toBe(4003)
+    expect(store.get(D1)).toBe(null)
+    expect(store.get(D3).sessions).toEqual({})
+    expect(last(claim(staleCode))).toEqual({ t: 'pair-error' })
+    expect(last(authBrowser(T1, oldSession))).toEqual({ t: 'dev-auth-err' })
+
+    // daemon 已换 key：用新设备身份重新发码，新浏览器可用新 token 配对
+    const code2 = makeCode(daemon)
+    const fresh = claim(code2)
+    expect(last(fresh)).toMatchObject({ t: 'pair-ok', deviceId: D3, token: T3 })
+    relay.handle(daemon, { t: 'dev-state', state: { ok: 1 } }, { ip: IP })
+    expect(last(fresh)).toMatchObject({ t: 'dev-state', state: { ok: 1 } })
+  })
+
+  it('revoke-all 非法输入：同 token / 坏 token / 撞已有设备 → dev-revoke-err 且设备不变', () => {
+    const daemon = authDaemon()
+    claim(makeCode(daemon)) // 让 D1 真正落盘，才能断言“设备不变”
+    relay.handle(daemon, { t: 'dev-revoke-all', newToken: T1 }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'dev-revoke-err' })
+
+    relay.handle(daemon, { t: 'dev-revoke-all', newToken: 'nope' }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'dev-revoke-err' })
+
+    const T4 = 'e'.repeat(64)
+    store.upsert(deriveDeviceId(T4), { tokenHash: hashToken(T4), name: 'other', createdAt: 1, sessions: {} })
+    relay.handle(daemon, { t: 'dev-revoke-all', newToken: T4 }, { ip: IP })
+    expect(last(daemon)).toEqual({ t: 'dev-revoke-err' })
+    expect(store.get(D1)).toBeTruthy()
+  })
+})
+
 describe('限速与未知帧', () => {
   it('每连接帧预算：超限回 rate 且不再处理', () => {
     makeRelay({ frameLimit: 3 })
@@ -240,5 +320,15 @@ describe('限速与未知帧', () => {
     const daemon = authDaemon()
     relay.handle(daemon, { t: 'nope' }, { ip: IP })
     expect(last(daemon)).toEqual({ t: 'error', msg: 'bad frame' })
+  })
+
+  it('pair-new 预算 5/60s：第 6 次回 rate', () => {
+    const daemon = authDaemon()
+    for (let i = 0; i < 5; i++) {
+      relay.handle(daemon, { t: 'pair-new' }, { ip: IP })
+      expect(last(daemon).t).toBe('pair-code')
+    }
+    relay.handle(daemon, { t: 'pair-new' }, { ip: IP })
+    expect(last(daemon)).toMatchObject({ t: 'rate' })
   })
 })
