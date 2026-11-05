@@ -156,6 +156,23 @@ describe('host P3b 设备链路', () => {
     }
   })
 
+  it('远端 bot.update 后 dev-state 立即反映 deck 新值（C1 回归）', async () => {
+    makeHost()
+    await host.boot()
+    link.paired.mockReturnValue(true)
+    const res = captured.onCommand({
+      id: 'c1',
+      cmd: 'bot.update',
+      args: { id: 'lixiao', persona: 'NEW', chattiness: 77 },
+    })
+    expect(res).toEqual({ ok: true, err: null })
+    expect(link.pushState).toHaveBeenCalled()
+    const state = link.pushState.mock.calls[link.pushState.mock.calls.length - 1][0]
+    expect(state.bots[0]).toMatchObject({
+      id: 'lixiao', persona: 'NEW', chattiness: 77, model: 'm',
+    })
+  })
+
   it('onCommand 接到 deck：bot.stop 真停 runner', async () => {
     const stop = vi.fn()
     makeHost({

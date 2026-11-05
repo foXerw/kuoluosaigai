@@ -50,7 +50,14 @@
       <ul v-if="store.sessions.length" class="remote__sessions">
         <li v-for="s in store.sessions" :key="s.sessionId" class="remote__session">
           {{ s.label || 'device' }} · {{ s.online ? '在线' : '离线' }}
-          <button class="remote__revoke" type="button" @click="revoke(s.sessionId)">撤销</button>
+          <span v-if="s.sessionId === currentSessionId">（本机）</span>
+          <button
+            class="remote__revoke"
+            type="button"
+            :disabled="s.sessionId === currentSessionId"
+            :title="s.sessionId === currentSessionId ? '不能撤销正在使用的这浏览器' : '撤销该浏览器'"
+            @click="revoke(s.sessionId)"
+          >撤销</button>
         </li>
       </ul>
 
@@ -59,19 +66,21 @@
         API key 永不进中继——这里只能看到 {{ keyHintLabel }}，换 key 需在 daemon 本机操作。
       </p>
 
-      <BotCard
-        v-for="bot in mappedBots"
-        :key="bot.id"
-        :bot="bot"
-        :providers="mappedProviders"
-        :show-watch="false"
-        @start="act(store.startBot(bot.id))"
-        @stop="act(store.stopBot(bot.id))"
-        @switch-room="(rid) => act(store.switchRoom(bot.id, rid))"
-        @clear-buffer="act(store.clearBuffer(bot.id))"
-        @update="(patch) => update(bot.id, patch)"
-        @remove="act(store.removeBot(bot.id))"
-      />
+      <div :class="{ 'remote__cards--off': !controlsEnabled }" :title="controlsEnabled ? '' : 'daemon 不在线，操作不可用'">
+        <BotCard
+          v-for="bot in mappedBots"
+          :key="bot.id"
+          :bot="bot"
+          :providers="mappedProviders"
+          :show-watch="false"
+          @start="act(store.startBot(bot.id))"
+          @stop="act(store.stopBot(bot.id))"
+          @switch-room="(rid) => act(store.switchRoom(bot.id, rid))"
+          @clear-buffer="act(store.clearBuffer(bot.id))"
+          @update="(patch) => update(bot.id, patch)"
+          @remove="act(store.removeBot(bot.id))"
+        />
+      </div>
       <p v-if="!mappedBots.length" class="remote__empty">&gt; 这台 daemon 上没有 bot。</p>
 
       <form class="remote__add" @submit.prevent="addBot">
@@ -81,7 +90,7 @@
         <input v-model="form.persona" class="remote__field" placeholder="人格" />
         <input v-model="form.room" class="remote__field" placeholder="房间 ID" spellcheck="false" />
         <button class="remote__add-go" type="submit" :disabled="!canAdd">+ 添加</button>
-        <p class="remote__note">&gt; 新 bot 没有 API key；需在 daemon 本机配置后才能启动。</p>
+        <p class="remote__note">&gt; 新 bot 使用这台 daemon 的 provider/key 立即生效；它只是运行时条目，daemon 重启后以配置文件为准（可能消失）。</p>
       </form>
     </section>
   </div>
@@ -109,7 +118,20 @@ export default {
   computed: {
     statusText() {
       if (this.store.status === 'open') return this.store.online ? 'daemon 在线' : 'daemon 离线'
-      return this.store.status
+      const map = {
+        idle: '未连接',
+        connecting: '连接中',
+        closed: '已断开',
+        error: '连接错误',
+        offline: '未配置端点',
+      }
+      return map[this.store.status] || this.store.status
+    },
+    controlsEnabled() {
+      return this.store.status === 'open' && this.store.online
+    },
+    currentSessionId() {
+      return this.store.selectedDevice ? this.store.selectedDevice.sessionId : null
     },
     lampClass() {
       if (this.store.status === 'open' && this.store.online) return 'remote__lamp--on'
@@ -187,6 +209,8 @@ export default {
     update(id, patch) {
       const filtered = {}
       for (const k of UPDATE_KEYS) if (k in patch) filtered[k] = patch[k]
+      // BotCard 总是提交 model；空串会被 daemon 拒绝并连累同一次 persona 保存。
+      if (filtered.model === '') delete filtered.model
       if (Object.keys(filtered).length) this.act(this.store.updateBot(id, filtered))
     },
     async refreshSessions() {
@@ -227,7 +251,19 @@ export default {
 </script>
 
 <style scoped>
-.remote { padding: 12px 18px 24px; color: var(--term-fg, #39ff14); font-family: var(--term-font, monospace); }
+.remote {
+  padding: 12px 18px 24px;
+  color: var(--app-color, #39ff14);
+  font-family: var(--app-mono, monospace);
+  /* 手机主场景：必须和本地 deck 一样成为可滚动主体，否则下半部分够不着 */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
 .remote__title { font-size: 12px; letter-spacing: 1px; opacity: 0.8; margin: 14px 0 8px; }
 .remote__note { font-size: 11px; line-height: 1.6; opacity: 0.7; margin: 6px 0; }
 .remote__note--warn { color: #ffcc66; opacity: 0.9; }
@@ -255,4 +291,6 @@ export default {
 .remote__session { font-size: 11px; opacity: 0.85; padding: 3px 0; }
 .remote__empty { font-size: 11px; opacity: 0.6; }
 .remote__forget { margin-top: 4px; }
+.remote__cards--off { opacity: 0.45; pointer-events: none; }
+.remote__revoke:disabled { opacity: 0.3; cursor: default; }
 </style>

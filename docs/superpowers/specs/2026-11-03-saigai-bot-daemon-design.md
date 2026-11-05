@@ -559,8 +559,14 @@ ECDH 配对（密钥交换 + 面板侧加密），代价是配对流程复杂一
   API key 只显示 `****后4位`（`keyHint`），**面板不提供改 key**（Q5a）。
 - **语义提示**：面板明写「远端改人格/增删 bot 是运行时修改，daemon 重启回配置；
   切房持久化（R20）」；新增 bot 提示需在 daemon 本机配置 key 才能启动。
-- **测试**：前端 488（新增 remote store 8 + RemoteDeck 5 + BotDeck 切换 1），
-  全量 834（488 + 79 + 267）。
+- **终审修文（2026-11-06）**：`dev-state` 的配置字段改取 **deck 有效配置**（远端
+  `bot.update` 后立即可见，含远端新增 bot；此前取配置对象导致编辑永远不生效）；
+  BotCard 的空 `model` 在远端保存时丢弃，避免整单被拒；命令回执 id 加 session 前缀
+  （PC+手机同设备不串台）；连接增加 socket 同一性守卫、切设备清空上一台状态、
+  `dev-revoked` 按当前连接设备删 roster；命令后立即推送 dev-state；远端面板成为可滚动
+  主体、离线时禁用操作、当前 session 禁止自撤；localStorage 不可用时降级内存。
+- **测试**：前端 491（remote store 10 + RemoteDeck 6 + BotDeck 切换 1），
+  全量 838（491 + 79 + 268）。
 - **未实测**：真实手机 4G + Cloudflare Tunnel 的配对/交互链路（协议两端都有真 WS
   契约测试，但未在公网环境人工验收）。
 

@@ -270,7 +270,9 @@ export function createDaemonHost({
     return link.pushState(buildDevState({
       snapshot: snapshot(),
       provider: { ...provider, apiKey: resolveApiKey(provider) },
-      configBots: current.bots, // 非敏感定义字段（persona/话痨度…）；apiKey 不在配置 bot 里
+      // 有效配置取 deck（远端 bot.update 只改 deck，不改 current；含远端新增的 bot）。
+      // deck bot 带 persona/chattiness/temperature/model，且没有 apiKey 字段。
+      configBots: deck.bots,
     }))
   }
 
@@ -371,7 +373,16 @@ export function createDaemonHost({
         token: identity.token(),
         name: current.name,
         WebSocketImpl,
-        onCommand: (frame) => commandHandler.handle(frame),
+        onCommand: (frame) => {
+          const res = commandHandler.handle(frame)
+          // 改完立即推一版状态：面板不必等 15s 的周期推送。
+          try {
+            pushState()
+          } catch (e) {
+            safeLog('warn', '命令后 dev-state 推送失败')
+          }
+          return res
+        },
         onStatus: () => {}, // 状态推送只走 onPaired（pair-claim 与重连两条路都会触发）
         onPaired: () => pushState(),
         logger: {

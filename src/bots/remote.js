@@ -75,11 +75,19 @@ export function createRemoteStore({
   let reconnectTimer = null
   let pairPending = false
   let tornDown = false
+  let activeDeviceId = null
   const pending = new Map() // id -> {resolve,reject,timer,type}
   const installed = loadDevices(storage)
 
   function persist() {
     saveDevices(storage, store.devices)
+  }
+
+  function forgetRoster(id) {
+    if (!id) return
+    store.devices = store.devices.filter((d) => d.deviceId !== id)
+    if (store.selectedId === id) store.selectedId = store.devices[0] ? store.devices[0].deviceId : null
+    persist()
   }
 
   function rejectPending(reason) {
@@ -119,13 +127,17 @@ export function createRemoteStore({
         store.online = !!frame.online
         store.notice = ''
         break
-      case 'dev-auth-err':
+      case 'dev-auth-err': {
+        const dead = activeDeviceId
         store.status = 'error'
         store.online = false
         store.notice = '配对已失效，请重新配对这台设备'
+        forgetRoster(dead) // 凭证已死，留着只会无限 auth 失败
         teardown(false)
         break
+      }
       case 'dev-state':
+        if (frame.deviceId && frame.deviceId !== activeDeviceId) return
         store.bots = Array.isArray(frame.state && frame.state.bots) ? frame.state.bots : []
         store.providers = Array.isArray(frame.state && frame.state.providers) ? frame.state.providers : []
         break
@@ -152,18 +164,15 @@ export function createRemoteStore({
         p.resolve(store.sessions)
         break
       }
-      case 'dev-revoked':
+      case 'dev-revoked': {
+        const revoked = activeDeviceId
         store.notice = '此浏览器已被撤销，需要重新配对'
         store.status = 'error'
         store.online = false
-        if (store.selectedId) {
-          const id = store.selectedId
-          store.devices = store.devices.filter((d) => d.deviceId !== id)
-          store.selectedId = store.devices[0] ? store.devices[0].deviceId : null
-          persist()
-        }
+        forgetRoster(revoked) // 按当前连接的设备删，不按可能已切的 selectedId
         teardown(false)
         break
+      }
       case 'rate':
         store.notice = '设备通道限速，稍后再试'
         break
@@ -184,6 +193,11 @@ export function createRemoteStore({
       try { old.close() } catch (e) { /* noop */ }
     }
     store.online = false
+    // 切设备/断线/撤销后不得残留上一台设备的 bot/会话视图。
+    store.bots = []
+    store.providers = []
+    store.sessions = []
+    activeDeviceId = null
     rejectPending(notify)
     if (store.status !== 'error') store.status = 'closed'
   }
@@ -220,17 +234,20 @@ export function createRemoteStore({
       return false
     }
     ws = sock
+    activeDeviceId = device.deviceId
     sock.onopen = () => {
-      send({
+      // 身份守卫：被新连接取代的旧 socket 的迟到 open 不能把旧 token 发到新连接上。
+      if (sock !== ws) return
+      sock.send(JSON.stringify({
         t: 'dev-auth',
         role: 'browser',
         deviceId: device.deviceId,
         token: device.token,
         sessionId: device.sessionId,
-      })
+      }))
     }
     sock.onmessage = (ev) => {
-      if (tornDown) return
+      if (tornDown || sock !== ws) return
       let frame
       try {
         frame = JSON.parse(ev.data)
@@ -258,7 +275,14 @@ export function createRemoteStore({
     if (!/^[A-HJ-NP-Z2-9]{6}$/.test(clean)) return Promise.reject(new Error('pair code invalid'))
     pairPending = true
     return new Promise((resolve, reject) => {
-      const sock = new WebSocketImpl(deviceUrl(wsUrl))
+      let sock
+      try {
+        sock = new WebSocketImpl(deviceUrl(wsUrl))
+      } catch (e) {
+        pairPending = false
+        reject(new Error('pair unavailable'))
+        return
+      }
       let settled = false
       const finish = (err, value) => {
         if (settled) return
@@ -296,9 +320,17 @@ export function createRemoteStore({
     })
   }
 
+  // 服务端把 dev-res 广播给该设备的**所有**浏览器：id 必须跨浏览器唯一，
+  // 否则 PC 与手机会互相 resolve 对方的命令。前缀取本 sessionId。
+  function nextId() {
+    seq += 1
+    const d = store.devices.find((x) => x.deviceId === activeDeviceId)
+    return (d ? d.sessionId.slice(0, 8) : 'anon') + '-' + seq
+  }
+
   function command(cmd, args = {}) {
     if (store.status !== 'open' || !ws) return Promise.reject(new Error('not connected'))
-    const id = 'r' + (++seq)
+    const id = nextId()
     if (!send({ t: 'dev-cmd', to: store.selectedId, id, cmd, args })) {
       return Promise.reject(new Error('not connected'))
     }
@@ -313,7 +345,7 @@ export function createRemoteStore({
 
   function requestSessions() {
     if (store.status !== 'open' || !ws) return Promise.reject(new Error('not connected'))
-    const id = 'r' + (++seq)
+    const id = nextId()
     if (!send({ t: 'dev-sessions', id })) return Promise.reject(new Error('not connected'))
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -326,7 +358,7 @@ export function createRemoteStore({
 
   function revokeSession(sessionId) {
     if (store.status !== 'open' || !ws) return Promise.reject(new Error('not connected'))
-    const id = 'r' + (++seq)
+    const id = nextId()
     if (!send({ t: 'dev-session-revoke', id, sessionId })) return Promise.reject(new Error('not connected'))
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

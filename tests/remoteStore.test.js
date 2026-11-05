@@ -132,6 +132,8 @@ describe('createRemoteStore', () => {
     const p = store.command('bot.start', { id: 'b1' })
     const frame = last(s)
     expect(frame).toMatchObject({ t: 'dev-cmd', to: 'dev1', cmd: 'bot.start', args: { id: 'b1' } })
+    // 回执 id 跨浏览器唯一：前缀是本 sessionId
+    expect(frame.id).toMatch(/^aaaaaaaa-\d+$/)
     s.emit({ t: 'dev-res', id: frame.id, ok: true, err: null })
     await expect(p).resolves.toEqual({ ok: true, err: null })
   })
@@ -173,6 +175,57 @@ describe('createRemoteStore', () => {
     expect(store.devices).toHaveLength(0)
     expect(JSON.parse(storage.getItem(DEVICES_KEY)).devices).toEqual([])
     await expect(store.command('bot.start', { id: 'b1' })).rejects.toThrow(/not connected/)
+  })
+
+  it('切换设备清空上一台的 bots/providers/sessions', async () => {
+    const storage = new MapStorage()
+    storage.setItem(DEVICES_KEY, JSON.stringify({
+      version: 1,
+      devices: [
+        { deviceId: 'd1', name: 'A', token: 'a'.repeat(64), sessionId: '1'.repeat(16) },
+        { deviceId: 'd2', name: 'B', token: 'b'.repeat(64), sessionId: '2'.repeat(16) },
+      ],
+    }))
+    const { store } = make({ storage })
+    store.select('d1')
+    const s1 = socket()
+    s1.open()
+    s1.emit({ t: 'dev-auth-ok', role: 'browser', deviceId: 'd1', name: 'A', online: true })
+    s1.emit({ t: 'dev-state', deviceId: 'd1', state: { bots: [{ id: 'bot-a' }], providers: [{}] } })
+    expect(store.bots).toHaveLength(1)
+
+    store.select('d2')
+    expect(store.bots).toEqual([])
+    expect(store.providers).toEqual([])
+    expect(store.sessions).toEqual([])
+    const s2 = socket()
+    s2.open()
+    expect(last(s2)).toMatchObject({ t: 'dev-auth', deviceId: 'd2' })
+  })
+
+  it('旧 socket 的迟到帧不能认证/污染新设备', async () => {
+    const storage = new MapStorage()
+    storage.setItem(DEVICES_KEY, JSON.stringify({
+      version: 1,
+      devices: [
+        { deviceId: 'd1', name: 'A', token: 'a'.repeat(64), sessionId: '1'.repeat(16) },
+        { deviceId: 'd2', name: 'B', token: 'b'.repeat(64), sessionId: '2'.repeat(16) },
+      ],
+    }))
+    const { store } = make({ storage })
+    store.select('d1')
+    const s1 = socket()
+    store.select('d2')
+    const s2 = socket()
+
+    s1.open() // 迟到 open：不得向 s2 发 d1 的 auth
+    expect(s2.sent).toEqual([])
+    s2.open()
+    expect(last(s2)).toMatchObject({ t: 'dev-auth', deviceId: 'd2' })
+    expect(s2.sent.filter((f) => f.t === 'dev-auth')).toHaveLength(1)
+
+    s1.emit({ t: 'dev-state', deviceId: 'd1', state: { bots: [{ id: 'stale' }] } })
+    expect(store.bots).toEqual([])
   })
 
   it('disconnect 清状态与待回执；removeDevice 清 roster', async () => {

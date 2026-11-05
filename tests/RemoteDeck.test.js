@@ -85,6 +85,10 @@ describe('RemoteDeck', () => {
     // apiKey 即使混进 patch 也必须被过滤，不能进 dev-cmd
     w.vm.update('b1', { persona: '新', apiKey: 'sk-secret' })
     expect(store.updateBot).toHaveBeenCalledWith('b1', { persona: '新' })
+
+    // BotCard 总带 model:''；空 model 必须被丢掉，否则 daemon 整单拒绝
+    w.vm.update('b1', { persona: '再改', model: '' })
+    expect(store.updateBot).toHaveBeenLastCalledWith('b1', { persona: '再改' })
   })
 
   it('会话列表：刷新与撤销', async () => {
@@ -103,6 +107,25 @@ describe('RemoteDeck', () => {
     expect(store.revokeSession).toHaveBeenCalledWith('s1')
   })
 
+  it('当前浏览器自己的 session 标记为本机且撤销按钮禁用', async () => {
+    const store = makeStore({
+      devices: [{ deviceId: 'd1', name: 'lab-vm' }],
+      selectedId: 'd1',
+      selectedDevice: { deviceId: 'd1', name: 'lab-vm', sessionId: 's1' },
+      status: 'open',
+      online: true,
+      sessions: [
+        { sessionId: 's1', label: '本机', online: true },
+        { sessionId: 's2', label: '手机', online: true },
+      ],
+    })
+    const w = mount(RemoteDeck, { props: { store } })
+    expect(w.text()).toContain('（本机）')
+    const buttons = w.findAll('.remote__revoke')
+    expect(buttons[0].attributes('disabled')).toBeDefined()
+    expect(buttons[1].attributes('disabled')).toBeUndefined()
+  })
+
   it('运行时修改提示在场；远端新增 bot 提示需要本机 key', async () => {
     const store = makeStore({
       devices: [{ deviceId: 'd1', name: 'lab-vm' }],
@@ -114,6 +137,6 @@ describe('RemoteDeck', () => {
     const w = mount(RemoteDeck, { props: { store } })
     expect(w.text()).toContain('运行时修改')
     expect(w.text()).toContain('API key 永不进中继')
-    expect(w.text()).toContain('需在 daemon 本机配置')
+    expect(w.text()).toContain('运行时条目')
   })
 })
