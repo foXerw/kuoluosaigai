@@ -1,8 +1,28 @@
 {
   "name": "kuoluosaigai-bot-core",
   "version": "0.1.0",
-  "private": true,
+  "description": "Host-agnostic bot core shared by the kuoluosaigai browser BOT DECK and the saigai-bot daemon.",
+  "license": "UNLICENSED",
   "type": "module",
   "main": "./index.js",
-  "exports": { ".": "./index.js" }
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "*.js"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/foXerw/kuoluosaigai.git",
+    "directory": "packages/bot-core"
+  },
+  "keywords": [
+    "kuoluosaigai",
+    "chatbot",
+    "bot",
+    "websocket"
+  ]
 }

@@ -1,8 +1,9 @@
 {
   "name": "kuoluosaigai-bot-daemon",
-  "type": "module",
   "version": "0.1.0",
-  "private": true,
+  "description": "24/7 saigai-bot daemon: run kuoluosaigai chat bots from a VM, NAS, or desktop.",
+  "license": "UNLICENSED",
+  "type": "module",
   "engines": {
     "node": ">=22"
   },
@@ -27,6 +28,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "kuoluosaigai-bot-core": "*"
-  }
+    "kuoluosaigai-bot-core": "^0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/foXerw/kuoluosaigai.git",
+    "directory": "packages/bot-daemon"
+  },
+  "keywords": [
+    "kuoluosaigai",
+    "chatbot",
+    "daemon",
+    "bot",
+    "websocket"
+  ]
 }
