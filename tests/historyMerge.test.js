@@ -143,6 +143,20 @@ describe('mergeHistory', () => {
 import fs from 'node:fs'
 import path from 'node:path'
 
+describe('恶意/损坏 history 帧硬化', () => {
+  it('跳过 null、数组、缺字符串 id 的条目，不抛', () => {
+    const responses = [{
+      messages: [
+        null, 42, 'x', [], { id: 7, text: 'bad' },
+        { id: 'ok1', ts: 1, text: 'good' },
+        { id: 'ok1', ts: 1, text: 'dup' },
+      ],
+    }]
+    const out = mergeHistory([null, { id: 'old', ts: 0, text: 'old' }], responses)
+    expect(out.map((m) => m.id)).toEqual(['old', 'ok1'])
+  })
+})
+
 describe('P0 搬包：跨侧可达性（Review Focus 5）', () => {
   it('core 包出口提供 mergeHistory', async () => {
     const core = await import('kuoluosaigai-bot-core')

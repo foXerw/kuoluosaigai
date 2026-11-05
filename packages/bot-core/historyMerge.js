@@ -22,10 +22,15 @@ function compareOrder(a, b) {
  * @returns {Array} 新数组：按 ts 升序（同 ts 按 id 字典序），长度 ≤ maxPerRoom
  */
 export function mergeHistory(existing, responses, { maxPerRoom = 500 } = {}) {
+  // 防御：响应来自任意同房客户端，null/数组/无字符串 id 的条目一律丢，不参与计票。
+  const valid = (m) => m !== null && typeof m === 'object' && !Array.isArray(m) &&
+    typeof m.id === 'string' && m.id.length > 0
+
   // 1. 每个响应者内部按 id 去重（首见为准），内部重复只计 1 票
   const deduped = (responses || []).map((r) => {
     const seen = new Map()
     for (const m of (r && r.messages) || []) {
+      if (!valid(m)) continue
       if (!seen.has(m.id)) seen.set(m.id, m)
     }
     return seen
@@ -46,6 +51,7 @@ export function mergeHistory(existing, responses, { maxPerRoom = 500 } = {}) {
   // 3. existing 全保留（同 id 首见为准，且永不被候选规则否决）
   const byId = new Map()
   for (const m of existing || []) {
+    if (!valid(m)) continue
     if (!byId.has(m.id)) byId.set(m.id, m)
   }
 

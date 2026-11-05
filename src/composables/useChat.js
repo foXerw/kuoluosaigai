@@ -162,7 +162,9 @@ export function useChat(url, { badge = '' } = {}) {
     // 迟到（窗口已关）的响应同样被 !histWindow 挡下
     if (frame.roomId !== currentRoom.value) return
     if (frame.roomId !== histWindow.roomId) return
-    histWindow.responses.push(frame)
+    // 防御：恶意/损坏响应不得把超大数组或非对象条目带进合并（服务器已截，这里是客户端半）。
+    const messages = Array.isArray(frame.messages) ? frame.messages.slice(0, HISTORY_RES_MAX) : []
+    histWindow.responses.push({ ...frame, messages })
   }
 
   function handleRate(frame) {
@@ -240,7 +242,11 @@ export function useChat(url, { badge = '' } = {}) {
     // 关键诊断：确认连的是 ws(s)://<真实主机> 还是 ws://localhost（后者说明 .env.local 被误打进生产包）
     console.info('[ws] connecting', fullUrl)
     ws = new WebSocket(fullUrl)
+    // socket 同一性守卫（与 bot connection 同款）：旧 socket 的 open/close/message
+    // 可能在新连接建立后迟到。凡 ws !== sock 一律早退——不清引用、不翻状态、不排重连。
+    const sock = ws
     ws.onopen = () => {
+      if (ws !== sock) return
       retries = 0
       status.value = 'open'
       // 重连优先回断开前所在房；从未入过房则回落地房（Review Focus #5）
@@ -248,6 +254,7 @@ export function useChat(url, { badge = '' } = {}) {
       if (target) join(target)
     }
     ws.onmessage = (ev) => {
+      if (ws !== sock) return
       let frame
       try {
         frame = JSON.parse(ev.data)
@@ -257,6 +264,7 @@ export function useChat(url, { badge = '' } = {}) {
       handleFrame(frame)
     }
     ws.onclose = (ev) => {
+      if (ws !== sock) return
       status.value = 'closed'
       ws = null
       if (closedByUser) return
@@ -269,6 +277,7 @@ export function useChat(url, { badge = '' } = {}) {
       retryTimer = setTimeout(openSocket, delay)
     }
     ws.onerror = () => {
+      if (ws !== sock) return
       // WebSocket 的 error 事件不带细节；真实原因在随后 close 事件的 code 里
       error.value = error.value || 'error'
     }

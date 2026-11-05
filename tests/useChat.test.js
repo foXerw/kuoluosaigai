@@ -78,6 +78,21 @@ async function openChat(c, { room = null, joined = null } = {}) {
 }
 
 describe('useChat', () => {
+  it('旧 socket 的迟到 close 不清空/不重连新连接（socket 同一性守卫）', async () => {
+    const w = mountChat()
+    const c = w.vm.c
+    c.connect()
+    await flush()
+    const s1 = lastSocket()
+    s1.readyState = 3
+    c.connect() // s1 已 close 态 → 立即建 s2
+    const s2 = lastSocket()
+    expect(s2).not.toBe(s1)
+    s1.onclose({ code: 1006 }) // 迟到的旧 close
+    expect(c.status.value).not.toBe('closed')
+    expect(lastSocket()).toBe(s2)
+  })
+
   beforeEach(() => {
     MockSocket.instances = []
     global.WebSocket = MockSocket
