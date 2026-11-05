@@ -5,7 +5,9 @@
 每条都注明代码出处；文档与代码冲突时，以代码为准并请回报修文档。
 
 三路线总览（PVE/NAS/Windows）见仓库 [`docs/saigai-bot-deploy.md`](../../../docs/saigai-bot-deploy.md)；
-本文件只展开 Linux systemd 与运行语义。
+本文件只展开 Linux systemd 与运行语义。注意：npm 包里只有 `deploy/`、没有 `docs/`，
+构建 Docker 镜像必须用**仓库根**作为 build context（`packages/bot-core` 与
+`packages/bot-daemon` 都要在场）。
 
 ---
 

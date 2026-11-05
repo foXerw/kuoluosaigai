@@ -25,8 +25,14 @@ services:
     init: true
     stop_grace_period: 15s
     user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
     environment:
-      - TZ=Asia/Shanghai
+      # quietHours 用本机墙钟；非中国时区请覆盖 TZ（宿主环境或 .env）
+      - TZ=${TZ:-Asia/Shanghai}
       # 只从宿主环境注入；不要把这个值写进 compose 文件本身（A1/A3）。
       - KUO_LLM_KEY=${KUO_LLM_KEY:?请先在 .env 或宿主环境设置 KUO_LLM_KEY}
     volumes:

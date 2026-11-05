@@ -1014,6 +1014,27 @@ describe('P4 humanize 管道（单条）', () => {
     expect(ctx.runner.getState().hourCount).toBe(1)
   })
 
+  it('typing 期间收到 rate：首段也不发（cooling 在进入发送循环前复查）', async () => {
+    const ctx = makeRunner({
+      rng: mkRng([0.5, 0, 0.5, 0.5, 0.5]), // 构造/prob/think/typing/penalize 冷却
+      humanize: true,
+      humanizeRng: mkRng([0.4, 0.5, 0.5, 0.5]),
+      fetchImpl: vi.fn(async () => llmOk('好的')),
+    })
+    const s = land(ctx)
+    s.emit(msgFrame({ id: 'cool', ts: 99 }))
+    ctx.resolveSleep() // think
+    await flush()
+    expect(ctx.sleepQ.map((x) => x.ms)).toEqual([1500])
+    s.emit({ type: 'rate' }) // 打字期间被限速
+    await flush()
+    ctx.resolveSleep() // typing 结束
+    await flush()
+    expect(sentMessages(s)).toHaveLength(0)
+    expect(ctx.runner.getState().hourCount).toBe(0)
+    expect(ctx.runner.getState().status).toBe('cooling')
+  })
+
   it('drowsy：quietNow 时 think×2、目标压到 8 字、指令含迷糊', async () => {
     const gate = { allowSpeak: () => true, quietNow: () => true }
     const ctx = makeRunner({

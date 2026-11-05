@@ -32,5 +32,9 @@ RUN npm init -y >/dev/null \
  && ln -s /opt/saigai-bot/node_modules/.bin/saigai-bot /usr/local/bin/saigai-bot
 
 USER node
+# 让 restart 循环/控制面失联在 `docker compose ps` 里可见（status 读 /data/rpc.json 的
+# 回环控制面；启动期给 30s 预热）。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD saigai-bot status --data-dir /data || exit 1
 ENTRYPOINT ["saigai-bot"]
 CMD ["run", "--config", "/config/saigai-bot.config.js", "--data-dir", "/data"]

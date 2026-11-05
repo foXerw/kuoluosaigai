@@ -44,7 +44,16 @@ function charLength(s) {
  */
 export function isSilence(text) {
   if (typeof text !== 'string') return false
-  const s = text.trim()
+  // 模型常给标记加句末标点或 markdown 强调（`[沉默]。` / `**沉默**`）：先剥装饰再匹配。
+  // 剥离只作用于首尾，句子内部的「沉默」不会因此整段命中（`沉默。然后呢` 仍为 false）。
+  let s = text.trim()
+  // 装饰可能叠两层（`**沉默**。`）：剥离到稳定为止，最多 3 轮防病态输入。
+  for (let i = 0; i < 3; i++) {
+    const before = s
+    s = s.replace(/^[*_`]+|[*_`]+$/gu, '').trim()
+    s = s.replace(/[。．.!！?？~～…\s]+$/gu, '').trim()
+    if (s === before) break
+  }
   if (!s || charLength(s) > 6) return false
   return SILENCE_RE.test(s)
 }
@@ -179,7 +188,15 @@ export function planReply(text, { rng = Math.random, targetLen = DEFAULT_TARGET,
   const pieces = splitSegments(body)
   const doSplit = allowSegments && pieces.length >= 2 && rng() < HUMANIZE_DEFAULTS.segmentProb
 
+  // 语气尾缀也算进目标长度上限：装饰让一段超发就丢掉装饰，而不是超发。
+  const targetN = Number.isFinite(targetLen) ? Math.max(2, Math.floor(targetLen)) : DEFAULT_TARGET
+  const cap = Math.min(MAX_TEXT, targetN + 6)
   const raw = doSplit ? pieces : [body]
-  const segments = raw.map((s) => applyTone(s, rng)).filter(Boolean)
+  const segments = raw
+    .map((s) => {
+      const toned = applyTone(s, rng)
+      return charLength(toned) <= cap ? toned : s
+    })
+    .filter(Boolean)
   return { silent: false, segments }
 }

@@ -25,10 +25,17 @@ describe('isSilence', () => {
     }
   })
 
+  it('容忍模型加的句末标点与 markdown 强调', () => {
+    for (const s of ['[沉默]。', '（沉默）!', '*沉默*', '**沉默**', '_沉默_', '【沉默】。', '**沉默**。']) {
+      expect(isSilence(s)).toBe(true)
+    }
+  })
+
   it('非沉默/超长/非字符串不误判', () => {
     expect(isSilence('我不想沉默')).toBe(false)
     expect(isSilence('沉默是今晚的康桥')).toBe(false)
     expect(isSilence('[沉默] 然后呢')).toBe(false)
+    expect(isSilence('沉默。然后呢')).toBe(false)
     expect(isSilence('')).toBe(false)
     expect(isSilence(null)).toBe(false)
     expect(isSilence(42)).toBe(false)
@@ -182,6 +189,17 @@ describe('planReply', () => {
       targetLen: 6,
       allowSegments: false,
     })
+    expect(Array.from(out.segments[0]).length).toBeLessThanOrEqual(12)
+  })
+
+  it('语气尾缀也计入 target+6：超限时放弃装饰而不是超发', () => {
+    const body = '一二三四五六七八九十一二' // 恰 12 = target 6 + 6
+    const out = planReply(body, {
+      rng: seq([0.01, 0.5]), // 括号命中；句号骰（无句号）
+      targetLen: 6,
+      allowSegments: false,
+    })
+    expect(out.silent).toBe(false)
     expect(Array.from(out.segments[0]).length).toBeLessThanOrEqual(12)
   })
 })

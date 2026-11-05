@@ -356,6 +356,8 @@ export function createBotRunner({
       // 合计封顶 Math.min(think+typing, 15000)：第二段只补差值（drowsy 用加长后的 thinkMs）
       await sleep(Math.max(0, Math.min(typing, RHYTHM_DEFAULTS.totalDelayCapMs - thinkMs)))
       if (!started || epoch !== roomEpoch) return
+      // rate 帧可能在 think/typing 期间到达：进入发送循环前就复查冷却，首段也不硬发。
+      if (cooling) return
       // B7 双保险其二：触发帧所在房必须仍是当前房
       if (job.frame && job.frame.roomId !== connection.currentRoomId) return
 

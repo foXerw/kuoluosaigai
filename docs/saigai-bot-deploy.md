@@ -69,8 +69,12 @@ sudo install -d -m 700 /etc/saigai-bot
 sudo sh -c 'umask 077; printf "KUO_LLM_KEY=%s\n" "sk-..." > /etc/saigai-bot/saigai-bot.env'
 sudo chmod 600 /etc/saigai-bot/saigai-bot.env
 
-# ④ 不写盘地先校验（validate 不连网、不创建 state；走仓库路线用 npx）
+# ④ 不写盘地先校验（validate 不连网、不创建 state）
+# 全局安装路线：
 KUO_LLM_KEY=sk-... saigai-bot validate \
+  /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
+# 仓库克隆 + npm install 路线（二进制未上 PATH）：
+KUO_LLM_KEY=sk-... npx saigai-bot validate \
   /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
 ```
 
@@ -128,6 +132,8 @@ docker compose exec saigai-bot saigai-bot status --data-dir /data
 - `./config` 只读挂载；`./data` 必须可写且持久（NAS 上指向共享文件夹的固定路径）。
 - `restart: unless-stopped`；`stop_grace_period: 15s` 给 state 冲刷留时间。
 - 容器以 uid 1000 运行；NAS 的 ACL 若映射不同，改 compose 里的 `user:` 或目录属主。
+- `TZ` 默认 `Asia/Shanghai`；`quietHours` 按本机墙钟，非中国时区在 `.env` 里设
+  `TZ=Europe/Berlin` 之类的值，否则静默窗会错位。
 - 镜像只监听容器内部回环（`rpc.json` 控制面），不需要映射任何端口。
 - 升级：重新 build 镜像后 `docker compose up -d`；数据目录不动。（本地 tag
   `kuoluosaigai/saigai-bot:latest` 不要 `docker compose pull`——那会去 registry

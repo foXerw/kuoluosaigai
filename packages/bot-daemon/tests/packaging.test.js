@@ -35,6 +35,8 @@ describe('packaging：core 包', () => {
     expect(pkg.license).toBe('UNLICENSED')
     expect(pkg.engines.node).toBeTruthy()
     expect(pkg.repository.directory).toBe('packages/bot-core')
+    expect(pkg.homepage).toContain('kuoluosaigai')
+    expect(pkg.bugs.url).toContain('issues')
     expect(pkg.main).toBe('./index.js')
     expect(pkg.exports['.']).toBe('./index.js')
   })
@@ -66,6 +68,8 @@ describe('packaging：daemon 包', () => {
     expect(pkg.license).toBe('UNLICENSED')
     expect(pkg.engines.node).toBe('>=22')
     expect(pkg.repository.directory).toBe('packages/bot-daemon')
+    expect(pkg.homepage).toContain('kuoluosaigai')
+    expect(pkg.bugs.url).toContain('issues')
     expect(pkg.bin['saigai-bot']).toBe('./bin/saigai-bot.js')
   })
 
@@ -107,6 +111,7 @@ describe('packaging：Docker / NAS', () => {
     expect(dockerfile).toContain('npm pack')
     expect(dockerfile).toContain('USER node')
     expect(dockerfile).toContain('/data')
+    expect(dockerfile).toContain('HEALTHCHECK')
     expect(dockerfile).toContain('ENTRYPOINT ["saigai-bot"]')
     expect(dockerfile).toContain('"run", "--config", "/config/saigai-bot.config.js", "--data-dir", "/data"')
   })
@@ -122,7 +127,10 @@ describe('packaging：Docker / NAS', () => {
     expect(compose).toContain('./config:/config:ro')
     expect(compose).toContain('./data:/data')
     expect(compose).toContain('KUO_LLM_KEY')
-    expect(compose).toContain('TZ=')
+    expect(compose).toContain('TZ=${TZ:-Asia/Shanghai}') // 硬编码会让非中国用户静默窗错位
+    expect(compose).toContain('read_only: true')
+    expect(compose).toContain('no-new-privileges:true')
+    expect(compose).toContain('tmpfs:')
     expect(compose).toContain('command:')
     expect(compose).toContain('run')
     expect(compose).toContain('/config/saigai-bot.config.js')
@@ -241,5 +249,11 @@ describe('packaging：三路线部署文档', () => {
     const deployReadme = readText(path.join(DAEMON_DIR, 'deploy', 'README.md'))
     expect(deployReadme).not.toContain('private: true')
     expect(deployReadme).not.toContain('kuoluosaigai-bot-core "*"')
+    expect(deployReadme).toContain('仓库根') // 镜像构建上下文必须说清
+  })
+
+  it('仓库路线用 npx，TZ 可覆盖', () => {
+    expect(doc).toContain('npx saigai-bot')
+    expect(doc).toContain('TZ=')
   })
 })

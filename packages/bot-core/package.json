@@ -19,6 +19,10 @@
     "url": "git+https://github.com/foXerw/kuoluosaigai.git",
     "directory": "packages/bot-core"
   },
+  "homepage": "https://github.com/foXerw/kuoluosaigai#readme",
+  "bugs": {
+    "url": "https://github.com/foXerw/kuoluosaigai/issues"
+  },
   "keywords": [
     "kuoluosaigai",
     "chatbot",
