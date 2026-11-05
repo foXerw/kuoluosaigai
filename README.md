@@ -21,7 +21,7 @@
 | 层 | 技术 |
 |---|---|
 | 前端 | Vue 3 + Ant Design Vue（魔改主题）+ Vitest。自定义创意做英雄区，Ant Design 做结构化面板 |
-| 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库；唯一落盘是房间 ID 注册表 `server/data/rooms.log`（append-only），消息内容永不落盘 |
+| 后端 | Node.js + [`ws`](https://www.npmjs.com/package/ws)，无框架、无数据库；落盘只有房间 ID 注册表 `server/data/rooms.log`（append-only）与设备配对表 `server/data/devices.json`（P3a），消息内容永不落盘 |
 | 传输 | WebSocket，JSON 文本帧 |
 | bot 核心包 | [`packages/bot-core`](packages/bot-core/)（`kuoluosaigai-bot-core`）：浏览器 BOT DECK 面板与 `saigai-bot` 常驻 daemon 共用的**宿主无关核心**——纯 ESM、零 Vue/DOM/localStorage，浏览器与 Node 两侧只是注入的宿主原语不同 |
 
@@ -79,9 +79,14 @@ npm start            # 默认 http/ws://localhost:8080，平台用 PORT 环境�
 
 > 纯静态平台（Netlify / Vercel / Cloudflare Pages）不跑 `npm start`，只用 `npm run build` 的 `dist/`；此时聊天后端需在能跑 Node 的平台单独托管，并用上面的环境变量指过去。
 
-### 注册表必须可写且持久（`server/data/`）
+### 落盘面必须可写且持久（`server/data/`）
 
-`server/data/rooms.log` 是整个服务**唯一的落盘**：append-only 的房间 ID 注册表（首次启动自动建目录并写入公共房种子）。部署时这个目录必须**可写**，且要**跨重启/重部署保留**——注册表一丢，所有私房 ID 集体失效、永别，只剩四个公共房被种子重新点亮，即规则页预告的「世界末日」彩蛋；对运维来说它就是事故。容器文件系统临时的平台（Render / Railway / Fly 免费版等）请把持久卷挂到 `server/data/`，或用环境变量 `KUO_ROOMS_FILE` 把注册表指到持久盘，否则「房间永存」的承诺不成立。
+`server/data/` 是服务端的落盘面，部署时必须**可写**且**跨重启/重部署保留**：
+
+- `rooms.log`：append-only 的房间 ID 注册表（首次启动自动建目录并写入公共房种子）。注册表一丢，所有私房 ID 集体失效、永别，只剩四个公共房被种子重新点亮，即规则页预告的「世界末日」彩蛋；对运维来说它就是事故。
+- `devices.json`（P3a）：设备身份（令牌 hash）与已配对浏览器 session。丢了不会泄露任何 key，但所有浏览器需要重新 `pair`；daemon 的本地令牌不变，重新扫码即可。可用 `KUO_DEVICES_FILE` 指到持久盘。
+
+容器文件系统临时的平台（Render / Railway / Fly 免费版等）请把持久卷挂到 `server/data/`，或用 `KUO_ROOMS_FILE`/`KUO_DEVICES_FILE` 指到持久盘。
 
 ## 项目结构
 
@@ -139,4 +144,5 @@ packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 sai
 - [x] v3：多聊天室（纯 ID 房间、P2P 历史记忆、注册表落盘、反脚本护栏、RULES 页）
 - [x] P4 拟人化：Tieba few-shot + transcript 单条 + 目标长度/沉默/分段/语气/迷糊（bot-core，浏览器与 daemon 共用）
 - [x] P2 交付形态：可发布 npm 包 + Docker/NAS compose + PVE/NAS/Windows 三路线部署文档
+- [ ] P3 控制中继：P3a 服务端设备通道/配对/路由已落地；P3b daemon、P3c 浏览器远端 deck 待做
 - [ ] 后续：性能摸测与优化轮、后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
