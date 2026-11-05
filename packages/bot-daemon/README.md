@@ -40,6 +40,21 @@ saigai-bot run --config ./saigai-bot.config.js --data-dir ./data
 saigai-bot status --data-dir ./data
 ```
 
+## 配对手机 / 撤销
+
+daemon 跑起来之后：
+
+```bash
+saigai-bot pair            # 打印 6 位一次性配对码（60s），在网站 BOT DECK 输入
+saigai-bot revoke --all    # 撤销所有已配对浏览器，并轮换本机设备令牌
+```
+
+- `pair` 必须能连上本地 daemon 的回环控制面（daemon 没跑会明确退 1）。
+- `revoke --all` 会先把新令牌写进 `device.json`，再通知服务器轮换；服务端拒绝时本地回滚。
+- **远端改人格/增删 bot 是运行时修改**：不写配置文件，daemon 重启后以配置为准。
+  手机切的房间是例外——会写 `runtime.json`（R20），重启后仍然生效。
+
+
 ## 常驻部署
 
 - Linux/PVE + systemd：`deploy/saigai-bot.service` 与 `deploy/README.md`

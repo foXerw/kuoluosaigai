@@ -278,6 +278,8 @@ AFK 骰按**输出轮次**掷一次（不是每段一次）：否则 4 段会把
 saigai-bot validate --config /var/lib/saigai-bot/.config/saigai-bot/saigai-bot.config.js
 saigai-bot doctor  # 改环境/换 provider 后跑一遍
 saigai-bot status  # 粘滞 restartRequired 横幅 + 各 bot 读数 + 孤儿清单
+saigai-bot pair            # P3b：6 位配对码（daemon 必须正在运行）
+saigai-bot revoke --all    # P3b：撤销所有已配对浏览器并轮换设备令牌
 journalctl -fu saigai-bot          # 结构化日志：一行一 JSON（journald 友好，§8.2）
 sudo systemctl restart saigai-bot  # 让 §6.5 的粘滞位落地；也解决 §6.3 的「改不动内容」
 ```

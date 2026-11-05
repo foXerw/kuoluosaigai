@@ -518,9 +518,27 @@ ECDH 配对（密钥交换 + 面板侧加密），代价是配对流程复杂一
 - 测试：server 39 → 79（含 `devices`/`relay`/真实 WS `/device`/跨重启/CF-IP 限速/
   凭证分域/墓碑/深度 apiKey/缓存驱逐/daemon 接管）。全量 733 → 773。
 
-**未完成（P3b/P3c）**：daemon 设备客户端与本地 rpc 的 pair/revoke、浏览器远端 deck 面板、
-手机 4G 实测；`state.json` 的 room override（R20）归 P3b。**真实 Cloudflare Tunnel +
+**未完成（P3c）**：浏览器远端 deck 面板、手机 4G 实测。**真实 Cloudflare Tunnel +
 4G 尚未实测**。
+
+### 11.9 实现状态（P3b daemon 侧，2026-11-06）
+
+- **设备身份**：`packages/bot-daemon/device.js`，首启在数据目录铸 64 hex 令牌
+  （`device.json`），`deviceId = sha256(token)[:16]`；原子写、0600 尽力而为；坏文件重铸。
+- **中继客户端**：`relay-client.js` 连 `serverUrl + /device`，dev-auth、1/2/5s 退避、
+  配对码、`paired`、`dev-cmd`→白名单→`dev-res`、`dev-replaced` 停止重连、令牌轮换。
+- **命令白名单**：`commands.js`：`deck.get/bot.add/bot.update/bot.remove/bot.start/
+  bot.stop/bot.switchRoom/buffer.clear`；`deck.update` 明确 unsupported；任何 `apiKey`
+  （含深嵌套）拒绝；`dev-state` 只带 `keyHint`。
+- **R20**：`runtime.js` 把 `bot.switchRoom` 的 `{room, baseRoom}` 持久化；启动/热重载只在
+  配置房未变时应用，配置改房则清覆盖、配置赢。**其余远端修改（人格/增删 bot）是运行时
+  修改**，不写配置，重启回配置——这是 Q2 的直接后果，P3c 必须在面板上如实说明。
+- **CLI/rpc**：`saigai-bot pair`（经回环 `POST /pair` → 配对码，60s）、
+  `saigai-bot revoke --all`（`POST /revoke` → 本地先落新令牌 → 服务端轮换；失败回滚）。
+  两者都要求 daemon 正在运行；未连接/未配对时明确退 1，不挂起。
+- **公共房形状修正**：daemon/config 的 room 校验从「恰好 6 位」改为 5–8 位
+  （`amber` 5、`magenta` 7、`setsubun` 8 都是合法公共房）；私房仍由服务器注册表决定存在性。
+- **测试**：全量 773 → 813（474 + 79 + 260）。
 
 ---
 

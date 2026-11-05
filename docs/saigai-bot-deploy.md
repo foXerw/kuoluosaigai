@@ -47,6 +47,21 @@ saigai-bot validate ./saigai-bot.config.js
 saigai-bot doctor                # 出网、TLS、时钟、配置、WS 可达性
 ```
 
+## 配对手机 / 撤销（P3b）
+
+daemon 常驻起来之后：
+
+```bash
+saigai-bot pair            # 6 位一次性配对码（60s），在网站 BOT DECK 输入
+saigai-bot revoke --all    # 撤销所有已配对浏览器并轮换设备令牌
+```
+
+- 两条命令都通过本地回环控制面找**正在运行的** daemon；没起/未连上会明确退 1。
+- API key 永不进中继：远端面板只能看到 `****后4位`，换 key 仍需本机编辑配置/环境。
+- 远端改人格、增删 bot 是**运行时**修改，daemon 重启后以配置文件为准；手机切的房间
+  会持久化到 `runtime.json`（R20），重启后仍生效。
+- 浏览器远端 deck 面板（P3c）尚未上线；服务端与 daemon 协议已就绪。
+
 ---
 
 ## 1. PVE / Linux VM + systemd

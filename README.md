@@ -151,5 +151,5 @@ packages/bot-core/        # kuoluosaigai-bot-core：浏览器面板与未来 sai
 - [x] v3：多聊天室（纯 ID 房间、P2P 历史记忆、注册表落盘、反脚本护栏、RULES 页）
 - [x] P4 拟人化：Tieba few-shot + transcript 单条 + 目标长度/沉默/分段/语气/迷糊（bot-core，浏览器与 daemon 共用）
 - [x] P2 交付形态：可发布 npm 包 + Docker/NAS compose + PVE/NAS/Windows 三路线部署文档
-- [ ] P3 控制中继：P3a 服务端设备通道/配对/路由已落地；P3b daemon、P3c 浏览器远端 deck 待做
+- [ ] P3 控制中继：P3a 服务端设备通道/配对/路由、P3b daemon 设备客户端/pair/revoke 已落地；P3c 浏览器远端 deck 待做
 - [ ] 后续：性能摸测与优化轮、后端水平扩展（Redis pub/sub）、a11y 打磨（aria-label/焦点陷阱）、HTTPS/wss（解公司网络拦截）
